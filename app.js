@@ -199,8 +199,10 @@ async function handleFile(fileOrFiles) {
             }
         } else {
             // Regular file
+            // Check for custom filepath from drag-drop traversal
+            const path = file.filepath || file.webkitRelativePath || file.name;
             processedFiles.push({
-                name: file.webkitRelativePath || file.name,
+                name: path,
                 blob: file
             });
         }
@@ -215,7 +217,7 @@ async function handleFile(fileOrFiles) {
     
     // 2. Read content
     for (const pFile of processedFiles) {
-        const name = pFile.name;
+        const name = pFile.name || 'unknown-file';
         const ext = name.split('.').pop().toLowerCase();
         // Robust binary check by extension (safer for unzipped blobs)
         const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'woff', 'woff2', 'ttf', 'eot'].includes(ext);
@@ -243,7 +245,7 @@ async function handleFile(fileOrFiles) {
         
         // Strip rootDir from all files if they start with it
         currentProjectFiles.forEach(f => {
-            if (f.name && f.name.startsWith(rootDir)) {
+            if (f.name && typeof f.name === 'string' && f.name.startsWith(rootDir)) {
                 f.name = f.name.substring(rootDir.length);
             }
         });
@@ -405,16 +407,75 @@ dropZone.addEventListener('dragleave', () => {
     dropZone.classList.remove('drag-over');
 });
 
-dropZone.addEventListener('drop', (e) => {
+dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    if (e.dataTransfer.items) {
-        const files = [];
-        // Extract files from DataTransfer
-        for(let i=0; i<e.dataTransfer.files.length; i++) {
-            files.push(e.dataTransfer.files[i]);
+
+    const items = e.dataTransfer.items;
+    if (!items) return;
+
+    addLog({ message: 'Scanning dropped files...', type: 'info' });
+
+    const files = [];
+    const queue = [];
+
+    // Helper to traverse directories
+    const traverse = (entry, path = '') => {
+        return new Promise((resolve) => {
+            if (entry.isFile) {
+                entry.file(file => {
+                    // Attach full path for handleFile
+                    file.filepath = path + file.name;
+                    resolve([file]);
+                });
+            } else if (entry.isDirectory) {
+                const dirReader = entry.createReader();
+                const allFiles = [];
+                
+                const readBatch = () => {
+                    dirReader.readEntries(async (entries) => {
+                        if (entries.length === 0) {
+                            resolve(allFiles);
+                        } else {
+                            const promises = entries.map(subEntry => traverse(subEntry, path + entry.name + '/'));
+                            const results = await Promise.all(promises);
+                            allFiles.push(...results.flat());
+                            readBatch();
+                        }
+                    });
+                };
+                readBatch();
+            } else {
+                resolve([]);
+            }
+        });
+    };
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        // webkitGetAsEntry is standard for DnD in modern browsers
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+        
+        if (entry) {
+            queue.push(traverse(entry));
+        } else if (item.kind === 'file') {
+            const file = item.getAsFile();
+            if (file) files.push(file);
         }
-        handleFile(files);
+    }
+
+    try {
+        const results = await Promise.all(queue);
+        const validFiles = results.flat().concat(files);
+        
+        if (validFiles.length > 0) {
+            handleFile(validFiles);
+        } else {
+            addLog({ message: 'No valid files found in drop.', type: 'warning' });
+        }
+    } catch (err) {
+        console.error(err);
+        addLog({ message: 'Error scanning files: ' + err.message, type: 'error' });
     }
 });
 
