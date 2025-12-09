@@ -46,7 +46,8 @@ export class RefactorEngine {
      * @returns {Promise<object>} { html, files: [{name, content}] }
      */
     async process(htmlString, options) {
-        const { mergeCss, mergeJs, extremeMode, aiSplit } = options;
+        const { mergeCss, mergeJs, extremeMode, aiSplit, filenamePrefix } = options;
+        const prefix = filenamePrefix ? `${filenamePrefix}.` : '';
 
         this.log('Initializing DOMParser...', 'info');
         const parser = new DOMParser();
@@ -95,19 +96,21 @@ export class RefactorEngine {
             } else if (mergeCss) {
                 // ... Existing Merge Logic ...
                 let processedContent = '';
+                const cssFileName = `${prefix}style.css`;
+                
                 styleTags.forEach((style, index) => {
                     processedContent += `/* Extracted from <style> block #${index + 1} */\n${style.textContent}\n\n`;
                     if (index === 0) {
                         const link = doc.createElement('link');
                         link.rel = 'stylesheet';
-                        link.href = 'style.css';
+                        link.href = cssFileName;
                         style.parentNode.replaceChild(link, style);
                     } else {
                         style.remove();
                     }
                 });
-                files.push({ name: 'style.css', content: processedContent });
-                this.log('Merged all CSS into style.css', 'success');
+                files.push({ name: cssFileName, content: processedContent });
+                this.log(`Merged all CSS into ${cssFileName}`, 'success');
                 
             } else {
                 // ... Existing Split Logic ...
@@ -162,15 +165,17 @@ export class RefactorEngine {
                 
             } else if (mergeJs) {
                 let processedContent = '';
+                const jsFileName = `${prefix}app.js`;
+
                 executableScripts.forEach((script, index) => {
                     processedContent += `// Extracted from script block #${index + 1}\n${script.textContent}\n\n`;
                     script.remove();
                 });
-                files.push({ name: 'app.js', content: processedContent });
+                files.push({ name: jsFileName, content: processedContent });
                 const mainScript = doc.createElement('script');
-                mainScript.src = 'app.js';
+                mainScript.src = jsFileName;
                 doc.body.appendChild(mainScript);
-                this.log('Merged all JS into app.js', 'success');
+                this.log(`Merged all JS into ${jsFileName}`, 'success');
                 
             } else {
                 executableScripts.forEach((script) => {

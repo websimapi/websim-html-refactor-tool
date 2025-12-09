@@ -21,6 +21,12 @@ const extremeModeCheck = document.getElementById('extremeMode');
 const aiSplitCheck = document.getElementById('aiSplit');
 const removeCommentsBtn = document.getElementById('removeCommentsBtn');
 
+// Preview Elements
+const previewFrame = document.getElementById('previewFrame');
+const previewPageSelect = document.getElementById('previewPageSelect');
+const viewOriginalBtn = document.getElementById('viewOriginalBtn');
+const viewRefactoredBtn = document.getElementById('viewRefactoredBtn');
+
 // Tab Switching
 const tabs = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
@@ -92,13 +98,22 @@ function updateFileList(files) {
         const item = document.createElement('div');
         item.className = 'file-item';
 
-        let icon = '';
-        if (file.name.endsWith('.js')) icon = '';
-        if (file.name.endsWith('.css')) icon = '';
-        if (file.name.endsWith('.html')) icon = '';
+        let icon = '📄';
+        if (file.name.endsWith('.js')) icon = '📜';
+        if (file.name.endsWith('.css')) icon = '🎨';
+        if (file.name.endsWith('.html')) icon = '🌐';
+        if (file.isBinary) icon = '🖼️';
 
         // Approximate size
-        const size = new Blob([file.content]).size;
+        let size = 0;
+        if (file.content) {
+            size = file.content.length; 
+            if (file.isBinary && typeof file.content === 'string' && file.content.startsWith('data:')) {
+                // Base64 size adjustment
+                size = Math.round((file.content.length - file.content.indexOf(',') - 1) * 0.75);
+            }
+        }
+        
         const sizeStr = size > 1024 ? (size/1024).toFixed(1) + ' KB' : size + ' B';
 
         item.innerHTML = `
@@ -112,7 +127,176 @@ function updateFileList(files) {
     });
 }
 
-// File Upload Handling
+// State
+let currentProjectFiles = []; // Array of {name, content, type}
+let refactoredProjectFiles = [];
+let currentPreviewMode = 'original'; // 'original' or 'refactored'
+
+// Preview Toggles
+viewOriginalBtn.addEventListener('click', () => {
+    viewOriginalBtn.classList.add('active');
+    viewRefactoredBtn.classList.remove('active');
+    currentPreviewMode = 'original';
+    updatePreview();
+});
+
+viewRefactoredBtn.addEventListener('click', () => {
+    if (refactoredProjectFiles.length === 0) {
+        addLog({ message: 'Refactor the project first to see the result.', type: 'warning' });
+        return;
+    }
+    viewRefactoredBtn.classList.add('active');
+    viewOriginalBtn.classList.remove('active');
+    currentPreviewMode = 'refactored';
+    updatePreview();
+});
+
+previewPageSelect.addEventListener('change', updatePreview);
+
+// Enhanced File Handler
+function handleFile(fileOrFiles) {
+    const files = (fileOrFiles instanceof FileList) ? Array.from(fileOrFiles) : [fileOrFiles];
+    
+    currentProjectFiles = [];
+    refactoredProjectFiles = [];
+    previewPageSelect.innerHTML = '';
+    
+    addLog({ message: `Processing ${files.length} file(s)...`, type: 'info' });
+
+    let htmlFound = false;
+    let readCount = 0;
+
+    files.forEach(file => {
+        const reader = new FileReader();
+        
+        // Check if binary (image) or text
+        const isImage = file.type.startsWith('image/');
+        
+        reader.onload = (e) => {
+            // Use webkitRelativePath if available and valid, else name
+            const path = file.webkitRelativePath || file.name;
+            
+            currentProjectFiles.push({
+                name: path,
+                content: e.target.result, 
+                fileObject: file,
+                isBinary: isImage
+            });
+
+            // If it's HTML, populate select
+            if (file.name.endsWith('.html')) {
+                const opt = document.createElement('option');
+                opt.value = path;
+                opt.textContent = path;
+                previewPageSelect.appendChild(opt);
+                
+                // If index.html, select it by default
+                if (file.name.toLowerCase() === 'index.html') {
+                    previewPageSelect.value = path;
+                }
+                
+                htmlFound = true;
+            }
+
+            readCount++;
+            if (readCount === files.length) {
+                finalizeUpload();
+            }
+        };
+
+        // For preview, we generally want Blob URLs, but for Refactoring we need Text content for HTML/CSS/JS.
+        // Images must be DataURL/Blob.
+        if (isImage) {
+            reader.readAsDataURL(file);
+        } else {
+            reader.readAsText(file);
+        }
+    });
+}
+
+function finalizeUpload() {
+    fileNameDisplay.textContent = `${currentProjectFiles.length} file(s) loaded`;
+    addLog({ message: 'All files loaded. Ready to refactor.', type: 'success' });
+    
+    // Sort files so index.html is first
+    currentProjectFiles.sort((a, b) => {
+        if (a.name === 'index.html') return -1;
+        if (b.name === 'index.html') return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    // Load the first HTML file content into the editor
+    const mainHtml = currentProjectFiles.find(f => f.name.endsWith('.html'));
+    if (mainHtml) {
+        htmlInput.value = mainHtml.content;
+        addLog({ message: `Loaded ${mainHtml.name} into editor.`, type: 'info' });
+        // Trigger preview
+        document.querySelector('[data-tab="preview"]').click();
+        updatePreview();
+    } else {
+        addLog({ message: 'No HTML file found in upload.', type: 'warning' });
+    }
+}
+
+// Preview Logic
+async function updatePreview() {
+    const mode = currentPreviewMode;
+    const files = mode === 'original' ? currentProjectFiles : refactoredProjectFiles;
+    const selectedPage = previewPageSelect.value || (files.find(f => f.name.endsWith('.html'))?.name);
+
+    if (!files.length || !selectedPage) return;
+
+    const blobMap = new Map();
+
+    // 1. Create Blobs for all assets
+    for (const file of files) {
+        let blob;
+        if (file.fileObject) {
+            blob = file.fileObject;
+        } else if (file.isBinary) {
+             // Handle dataURL
+             const fetchRes = await fetch(file.content);
+             blob = await fetchRes.blob();
+        } else {
+            // Text content
+            blob = new Blob([file.content], { type: getMimeType(file.name) });
+        }
+        blobMap.set(file.name, URL.createObjectURL(blob));
+    }
+
+    // 2. Process the HTML to inject these Blobs
+    const targetFile = files.find(f => f.name === selectedPage);
+    if (!targetFile) return;
+
+    let htmlContent = targetFile.content; 
+    
+    // Simple Regex replacement
+    // Sort keys by length desc to avoid partial matches
+    const paths = Array.from(blobMap.keys()).sort((a, b) => b.length - a.length);
+    
+    paths.forEach(path => {
+        if (path === selectedPage) return;
+        const blobUrl = blobMap.get(path);
+        
+        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Look for common boundaries
+        const regex = new RegExp(`(['"\\(\\/])` + escapedPath + `(['"\\)])`, 'g');
+        htmlContent = htmlContent.replace(regex, `$1${blobUrl}$2`);
+    });
+
+    const previewBlob = new Blob([htmlContent], { type: 'text/html' });
+    previewFrame.src = URL.createObjectURL(previewBlob);
+}
+
+function getMimeType(filename) {
+    if (filename.endsWith('.css')) return 'text/css';
+    if (filename.endsWith('.js')) return 'text/javascript';
+    if (filename.endsWith('.html')) return 'text/html';
+    if (filename.endsWith('.json')) return 'application/json';
+    return 'text/plain';
+}
+
+// File Upload Listeners
 dropZone.addEventListener('click', () => fileInput.click());
 
 dropZone.addEventListener('dragover', (e) => {
@@ -127,48 +311,49 @@ dropZone.addEventListener('dragleave', () => {
 dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    if (e.dataTransfer.files.length) {
-        handleFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.items) {
+        const files = [];
+        // Extract files from DataTransfer
+        for(let i=0; i<e.dataTransfer.files.length; i++) {
+            files.push(e.dataTransfer.files[i]);
+        }
+        handleFile(files);
     }
 });
 
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) {
-        handleFile(e.target.files[0]);
+        handleFile(e.target.files);
     }
 });
 
-function handleFile(file) {
-    if (file.type !== 'text/html' && !file.name.endsWith('.html')) {
-        addLog({ message: 'Error: Please upload a valid HTML file.', type: 'error' });
-        return;
-    }
-
-    fileNameDisplay.textContent = file.name;
-    addLog({ message: `File loaded: ${file.name} (${(file.size/1024).toFixed(1)} KB)`, type: 'info' });
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        htmlInput.value = e.target.result;
-        addLog({ message: 'HTML content loaded into editor.', type: 'success' });
-    };
-    reader.readAsText(file);
-}
-
 // Main Refactor Logic
 refactorBtn.addEventListener('click', async () => {
-    const rawHtml = htmlInput.value;
+    // If user edited text area, update the corresponding file in currentProjectFiles
+    const mainHtmlName = previewPageSelect.value || currentProjectFiles.find(f => f.name.endsWith('.html'))?.name;
+    if (mainHtmlName) {
+        const fileIdx = currentProjectFiles.findIndex(f => f.name === mainHtmlName);
+        if (fileIdx !== -1) {
+            currentProjectFiles[fileIdx].content = htmlInput.value;
+            currentProjectFiles[fileIdx].fileObject = null; // Invalidate binary
+        }
+    } else if (htmlInput.value.trim() && currentProjectFiles.length === 0) {
+        // User pasted code without file
+        currentProjectFiles.push({
+            name: 'index.html',
+            content: htmlInput.value,
+            isBinary: false
+        });
+    }
 
-    if (!rawHtml.trim()) {
-        addLog({ message: 'Error: Input is empty. Paste HTML or upload a file.', type: 'error' });
+    if (currentProjectFiles.length === 0) {
+        addLog({ message: 'Error: Input is empty. Paste HTML or upload files.', type: 'error' });
         return;
     }
 
     // Reset Logs
     logContainer.innerHTML = '';
     addLog({ message: 'Starting Refactor Process...', type: 'info' });
-
-    // Switch to log tab if not active
     document.querySelector('[data-tab="logs"]').click();
 
     try {
@@ -180,23 +365,66 @@ refactorBtn.addEventListener('click', async () => {
             aiSplit: aiSplitCheck.checked
         };
 
-        const result = await engine.process(rawHtml, options);
+        // NEW: Process Project
+        refactoredProjectFiles = [];
+        
+        const htmlFiles = currentProjectFiles.filter(f => f.name.endsWith('.html'));
+        const assetFiles = currentProjectFiles.filter(f => !f.name.endsWith('.html'));
+        
+        // Pass assets through
+        refactoredProjectFiles = [...assetFiles];
+
+        for (const htmlFile of htmlFiles) {
+            addLog({ message: `Processing ${htmlFile.name}...`, type: 'info' });
+            
+            // Avoid filename collision for extracted assets if multiple HTMLs
+            if (htmlFiles.length > 1) {
+                options.filenamePrefix = htmlFile.name.replace('.html', '');
+            } else {
+                options.filenamePrefix = '';
+            }
+            
+            const result = await engine.process(htmlFile.content, options);
+            
+            // Add transformed HTML
+            refactoredProjectFiles.push({
+                name: htmlFile.name,
+                content: result.html,
+                isBinary: false
+            });
+
+            // Add extracted files
+            result.files.forEach(f => {
+                refactoredProjectFiles.push({
+                    name: f.name,
+                    content: f.content,
+                    isBinary: false
+                });
+            });
+        }
+
+        addLog({ message: 'Project refactoring complete.', type: 'success' });
+
+        // Update preview list
+        updateFileList(refactoredProjectFiles);
+        
+        // Auto-switch to Refactored Preview
+        viewRefactoredBtn.click();
+        document.querySelector('[data-tab="preview"]').click();
 
         // Prepare ZIP
         addLog({ message: 'Packaging files into ZIP...', type: 'info' });
         const zip = new JSZip();
 
-        // Add refactored HTML
-        zip.file("index.html", result.html);
-
-        // Add extracted files
-        result.files.forEach(f => {
-            zip.file(f.name, f.content);
+        refactoredProjectFiles.forEach(f => {
+            if (f.isBinary && typeof f.content === 'string' && f.content.startsWith('data:')) {
+                 // Convert data URL to blob/uint8array for zip
+                 const data = f.content.split(',')[1];
+                 zip.file(f.name, data, {base64: true});
+            } else {
+                 zip.file(f.name, f.content);
+            }
         });
-
-        // Update preview list (include index.html manually for display)
-        const displayFiles = [{name: 'index.html', content: result.html}, ...result.files];
-        updateFileList(displayFiles);
 
         // Generate and Download
         const content = await zip.generateAsync({ type: "blob" });
