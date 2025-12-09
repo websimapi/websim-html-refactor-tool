@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HTML Refactor Tool</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Import Map for modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "jszip": "https://esm.sh/jszip",
+            "file-saver": "https://esm.sh/file-saver"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>HTML Refactor Tool</h1>
+            <p>Decompose monolithic HTML into modular components</p>
+        </header>
+
+        <main class="split-view">
+            <!-- Left Panel: Input & Controls -->
+            <section class="panel input-panel">
+                <div class="input-group">
+                    <label for="fileInput" class="file-drop-zone" id="dropZone">
+                        <span class="icon">📂</span>
+                        <span id="fileName">Click to Upload .html or Drag & Drop</span>
+                        <input type="file" id="fileInput" accept=".html">
+                    </label>
+                    <div class="divider">OR PASTE CODE</div>
+                    <textarea id="htmlInput" placeholder="Paste your <html> code here..."></textarea>
+                </div>
+
+                <div class="controls">
+                    <h3>Extraction Strategies</h3>
+                    <div class="options-grid">
+                        <label class="option-card">
+                            <input type="checkbox" id="mergeCss" checked>
+                            <span class="checkmark"></span>
+                            <div class="opt-text">
+                                <strong>Merge CSS</strong>
+                                <small>Combine all styles into style.css</small>
+                            </div>
+                        </label>
+
+                        <label class="option-card">
+                            <input type="checkbox" id="mergeJs" checked>
+                            <span class="checkmark"></span>
+                            <div class="opt-text">
+                                <strong>Merge JS</strong>
+                                <small>Combine all scripts into app.js</small>
+                            </div>
+                        </label>
+
+                        <label class="option-card danger-zone">
+                            <input type="checkbox" id="extremeMode">
+                            <span class="checkmark"></span>
+                            <div class="opt-text">
+                                <strong>Extreme Mode</strong>
+                                <small>Convert Body HTML to JS</small>
+                            </div>
+                        </label>
+                    </div>
+
+                    <button id="refactorBtn" class="primary-btn">
+                        <span>⚡ Refactor & Download ZIP</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Right Panel: Logs & Preview -->
+            <section class="panel output-panel">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="logs">Status Log</button>
+                    <button class="tab-btn" data-tab="files">File Preview</button>
+                </div>
+                
+                <div id="logsContent" class="tab-content active">
+                    <div id="logContainer" class="log-container">
+                        <div class="log-entry info">Waiting for input...</div>
+                    </div>
+                </div>
+
+                <div id="filesContent" class="tab-content">
+                    <div id="fileList" class="file-list">
+                        <!-- Files generated will appear here -->
+                        <div class="empty-state">No files generated yet.</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script type="module" src="app.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
