@@ -8,11 +8,11 @@
      */
     async performAiSplit(code, type) {
         // 1. Prepare code with line numbers for the AI
-        const lines = code.split('\\n');
-        const numberedCode = lines.map((line, idx) => `${idx + 1}| ${line}`).join('\\n');
+        const lines = code.split('\n');
+        const numberedCode = lines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
         
         // Truncate if too huge (safety limit for demo)
-        const safeCode = numberedCode.length > 50000 ? numberedCode.substring(0, 50000) + "\\n... (truncated)" : numberedCode;
+        const safeCode = numberedCode.length > 50000 ? numberedCode.substring(0, 50000) + "\n... (truncated)" : numberedCode;
 
         const systemPrompt = `You are a code refactoring engine. 
         Your goal is to split a monolithic ${type.toUpperCase()} file into logical, modular component files.
@@ -33,7 +33,7 @@
             const completion = await websim.chat.completions.create({
                 messages: [
                     { role: "system", content: systemPrompt },
-                    { role: "user", content: `Here is the code with line numbers:\\n\\n${safeCode}` }
+                    { role: "user", content: `Here is the code with line numbers:\n\n${safeCode}` }
                 ],
                 json: true
             });
@@ -115,7 +115,7 @@
                 // Extract content
                 const start = def.startLine - 1;
                 const end = def.endLine;
-                const content = allLines.slice(start, end).join('\\n');
+                const content = allLines.slice(start, end).join('\n');
 
                 // Simple brace counting (ignores strings/comments for speed, but usually sufficient for major blocks)
                 const opens = (content.match(/\\{/g) || []).length;
@@ -124,7 +124,7 @@
 
                 if (bufferDef) {
                     // We are in a merge state
-                    bufferContent += '\\n' + content;
+                    bufferContent += '\n' + content;
                     openBraces += netChange;
                     
                     // Extend the buffer definition
@@ -168,7 +168,7 @@
             continuousDefs.forEach(def => {
                 outputFiles.push({
                     name: def.name,
-                    content: allLines.slice(def.startLine - 1, def.endLine).join('\\n')
+                    content: allLines.slice(def.startLine - 1, def.endLine).join('\n')
                 });
             });
         }

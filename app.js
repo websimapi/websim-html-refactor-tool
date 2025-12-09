@@ -213,8 +213,6 @@ async function handleFile(fileOrFiles) {
 
     addLog({ message: `Loading ${processedFiles.length} files...`, type: 'info' });
     
-    let htmlFound = false;
-
     // 2. Read content
     for (const pFile of processedFiles) {
         const name = pFile.name;
@@ -229,20 +227,6 @@ async function handleFile(fileOrFiles) {
             content = await readFileAsText(pFile.blob);
         }
 
-        // Populate Dropdown for HTML
-        if (name.endsWith('.html')) {
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            previewPageSelect.appendChild(opt);
-            
-            // Auto-select index.html or first html
-            if (name.toLowerCase().endsWith('index.html') || !previewPageSelect.value) {
-                previewPageSelect.value = name;
-            }
-            htmlFound = true;
-        }
-
         currentProjectFiles.push({
             name: name,
             content: content,
@@ -250,6 +234,39 @@ async function handleFile(fileOrFiles) {
             isBinary: isImage
         });
     }
+
+    // NORMALIZE PATHS: Detect root folder (if dragged folder)
+    const htmlFile = currentProjectFiles.find(f => f.name.toLowerCase().endsWith('index.html')) || currentProjectFiles.find(f => f.name.endsWith('.html'));
+    
+    if (htmlFile && htmlFile.name.includes('/')) {
+        const rootDir = htmlFile.name.substring(0, htmlFile.name.lastIndexOf('/') + 1);
+        
+        // Strip rootDir from all files if they start with it
+        currentProjectFiles.forEach(f => {
+            if (f.name.startsWith(rootDir)) {
+                f.name = f.name.substring(rootDir.length);
+            }
+        });
+        
+        addLog({ message: `Detected project root: ${rootDir}. Paths normalized.`, type: 'info' });
+    }
+
+    // Re-populate Dropdown for HTML (after normalization)
+    previewPageSelect.innerHTML = '';
+    let htmlFound = false;
+    currentProjectFiles.forEach(f => {
+        if (f.name.endsWith('.html')) {
+            const opt = document.createElement('option');
+            opt.value = f.name;
+            opt.textContent = f.name;
+            previewPageSelect.appendChild(opt);
+            
+            if (f.name.toLowerCase() === 'index.html' || !previewPageSelect.value) {
+                previewPageSelect.value = f.name;
+            }
+            htmlFound = true;
+        }
+    });
 
     finalizeUpload();
 }
@@ -328,7 +345,6 @@ async function updatePreview() {
 
     let htmlContent = targetFile.content; 
     
-    // Simple Regex replacement
     // Sort keys by length desc to avoid partial matches
     const paths = Array.from(blobMap.keys()).sort((a, b) => b.length - a.length);
     
@@ -336,10 +352,19 @@ async function updatePreview() {
         if (path === selectedPage) return;
         const blobUrl = blobMap.get(path);
         
+        // Escape path for Regex
         const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Look for common boundaries
-        const regex = new RegExp(`(['"\\(\\/])` + escapedPath + `(['"\\)])`, 'g');
-        htmlContent = htmlContent.replace(regex, `$1${blobUrl}$2`);
+        
+        // Robust Regex:
+        // Group 1: Preceding delimiter (quote, paren, space, =, or start)
+        // Group 2: Optional path prefix (./ or /) - WE DISCARD THIS
+        // Path matches
+        // Group 3: Following delimiter (quote, paren, space, ?, #, or end)
+        const regex = new RegExp(`([\\s"\'\\(=]|^)(\\.?\\/)?` + escapedPath + `([\\s"\'\\)\\?#]|$)`, 'g');
+        
+        htmlContent = htmlContent.replace(regex, (match, p1, p2, p3) => {
+            return `${p1}${blobUrl}${p3}`;
+        });
     });
 
     const previewBlob = new Blob([htmlContent], { type: 'text/html' });
