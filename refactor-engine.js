@@ -100,6 +100,8 @@ export class RefactorEngine {
         const executableScripts = scriptTags.filter(s => !s.type || s.type === 'text/javascript' || s.type === 'module');
 
         let mergedJsContent = '';
+        // Track scripts to be loaded for Extreme Mode
+        let scriptsToLoad = [];
 
         if (executableScripts.length > 0) {
             this.log(`Found ${executableScripts.length} inline script blocks.`, 'info');
@@ -113,10 +115,16 @@ export class RefactorEngine {
                 
                 splitFiles.forEach(f => {
                     files.push(f);
-                    const script = doc.createElement('script');
-                    script.src = f.name;
-                    if (this.isEsModule(f.content)) script.type = 'module';
-                    doc.body.appendChild(script);
+                    scriptsToLoad.push({ name: f.name, isModule: this.isEsModule(f.content) });
+                    
+                    if (!extremeMode) {
+                        const script = doc.createElement('script');
+                        script.src = f.name;
+                        if (this.isEsModule(f.content)) script.type = 'module';
+                        // Ensure execution order
+                        script.async = false; 
+                        doc.body.appendChild(script);
+                    }
                     this.log(`AI Created: ${f.name}`, 'success');
                 });
                 
@@ -125,18 +133,30 @@ export class RefactorEngine {
                 files.push({ name: jsFileName, content: mergedJsContent });
                 
                 executableScripts.forEach(s => s.remove());
-                const mainScript = doc.createElement('script');
-                mainScript.src = jsFileName;
-                doc.body.appendChild(mainScript);
+                
+                scriptsToLoad.push({ name: jsFileName, isModule: false });
+
+                if (!extremeMode) {
+                    const mainScript = doc.createElement('script');
+                    mainScript.src = jsFileName;
+                    doc.body.appendChild(mainScript);
+                }
                 this.log(`Merged JS into ${jsFileName}`, 'success');
                 
             } else {
                 executableScripts.forEach((script) => {
                     const filename = `script-${jsCounter}.js`;
                     files.push({ name: filename, content: script.textContent });
-                    const newScript = doc.createElement('script');
-                    newScript.src = filename;
-                    script.parentNode.replaceChild(newScript, script);
+                    
+                    scriptsToLoad.push({ name: filename, isModule: false });
+
+                    if (!extremeMode) {
+                        const newScript = doc.createElement('script');
+                        newScript.src = filename;
+                        script.parentNode.replaceChild(newScript, script);
+                    } else {
+                        script.remove();
+                    }
                     jsCounter++;
                 });
             }
@@ -151,24 +171,61 @@ export class RefactorEngine {
                 .replace(/\$\{/g, '\\${')
                 .replace(/<\/script>/gi, '<\\/script>'); // Escape closing script tags to prevent early termination
 
+            // Serialize the script list for the loader
+            const scriptsJson = JSON.stringify(scriptsToLoad);
+
             const generatorContent = `
-document.addEventListener('DOMContentLoaded', () => {
+(function() {
+    const scripts = ${scriptsJson};
+    
+    function loadScripts() {
+        if (!scripts.length) return;
+        
+        let index = 0;
+        function loadNext() {
+            if (index >= scripts.length) return;
+            const s = scripts[index];
+            const scriptEl = document.createElement('script');
+            scriptEl.src = s.name;
+            if (s.isModule) scriptEl.type = 'module';
+            scriptEl.async = false; // Maintain order
+            
+            // For modules, onload might trigger differently, but simple sequential add is usually safer
+            scriptEl.onload = () => loadNext();
+            scriptEl.onerror = () => {
+                console.error("Failed to load script:", s.name);
+                loadNext();
+            };
+            
+            document.body.appendChild(scriptEl);
+            index++;
+        }
+        loadNext();
+    }
+
     const dynamicHTML = \`${escapedBody}\`;
-    document.body.innerHTML = dynamicHTML;
-    console.log("Extreme Mode: DOM Regenerated");
-});`;
+    // Replace body content immediately if body exists, or wait
+    if (document.body) {
+        document.body.innerHTML = dynamicHTML;
+        console.log("Extreme Mode: DOM Regenerated");
+        loadScripts();
+    } else {
+        document.addEventListener('DOMContentLoaded', () => {
+            document.body.innerHTML = dynamicHTML;
+            console.log("Extreme Mode: DOM Regenerated (Deferred)");
+            loadScripts();
+        });
+    }
+})();
+`;
 
-            files.push({ name: 'extreme-loader.js', content: generatorContent });
-            doc.body.innerHTML = '';
+            // Inline the loader to ensure preview blob-patching works on its content
             const loaderScript = doc.createElement('script');
-            loaderScript.src = 'extreme-loader.js';
+            loaderScript.textContent = generatorContent;
+            
+            // Clear body (scripts were already removed/tracked above)
+            doc.body.innerHTML = '';
             doc.body.appendChild(loaderScript);
-
-            if (mergeJs && mergedJsContent.trim()) {
-                const appScript = doc.createElement('script');
-                appScript.src = `${prefix}app.js`;
-                doc.body.appendChild(appScript);
-            }
         }
 
         const finalHtml = new XMLSerializer().serializeToString(doc);
@@ -394,82 +451,96 @@ document.addEventListener('DOMContentLoaded', () => {
      */
     scanCodeBalance(code) {
         let balance = 0;
-        let inString = false;
-        let stringChar = '';
-        let inComment = false;
-        let commentType = ''; // '//' or '/*'
-        let escape = false;
-        let inRegex = false;
+        let stack = []; // To track nesting (template literals)
 
         for (let i = 0; i < code.length; i++) {
             const char = code[i];
             const next = code[i+1] || '';
-            const prev = i > 0 ? code[i-1] : '';
+            const last = stack[stack.length - 1];
 
-            if (inString) {
-                if (escape) {
-                    escape = false;
-                } else if (char === '\\') {
-                    escape = true;
-                } else if (char === stringChar) {
-                    inString = false;
-                }
-            } else if (inComment) {
-                if (commentType === '//' && char === '\n') {
-                    inComment = false;
-                } else if (commentType === '/*' && char === '*' && next === '/') {
-                    inComment = false;
-                    i++; // skip /
-                }
-            } else if (inRegex) {
-                if (escape) {
-                    escape = false;
-                } else if (char === '\\') {
-                    escape = true;
-                } else if (char === '/') {
-                    inRegex = false;
-                }
-            } else {
-                // Not in string, comment, or regex
-                if (char === '"' || char === "'" || char === '`') {
-                    inString = true;
-                    stringChar = char;
-                } else if (char === '/' && next === '/') {
-                    inComment = true;
-                    commentType = '//';
+            // 1. Strings & Templates
+            if (last === 'string') {
+                if (char === '\\') i++; // skip escape
+                else if (char === stack[stack.length-2]) stack.pop(); // pop 'string' then check quote char stored? No, simplify.
+                // Re-implementation of state machine for robustness:
+                continue; 
+            }
+            if (last === 'template') {
+                 if (char === '\\') i++;
+                 else if (char === '`') stack.pop();
+                 else if (char === '$' && next === '{') {
+                     stack.push('code'); // Enter code interpolation
+                     i++;
+                 }
+                 continue;
+            }
+            
+            // 2. Comments
+            if (last === 'line-comment') {
+                if (char === '\n') stack.pop();
+                continue;
+            }
+            if (last === 'block-comment') {
+                if (char === '*' && next === '/') {
+                    stack.pop();
                     i++;
-                } else if (char === '/' && next === '*') {
-                    inComment = true;
-                    commentType = '/*';
-                    i++;
-                } else if (char === '/') {
-                    // Check for Regex literal vs Division
-                    // Heuristic: Regex usually follows operators, keywords, or start of line.
-                    // Division usually follows numbers, identifiers, or closing parens.
-                    // We look backwards for the last significant character.
-                    let j = i - 1;
-                    while (j >= 0 && /\s/.test(code[j])) j--;
-                    
-                    const lastChar = j >= 0 ? code[j] : '';
-                    // List of chars that suggest the next slash is a Regex
-                    const regexStarters = ['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';'];
-                    
-                    // Simple heuristic: if last char is an operator or block opener, it's likely a regex.
-                    // If it's a word character or digit or closing paren, likely division.
-                    // Note: 'return /abc/' works because lastChar is 'n' (part of keyword). Needs full tokenizer for perfect accuracy.
-                    // But for refactoring chunks, usually split points are between functions, so context is clean.
-                    
-                    // IMPROVED HEURISTIC: Check if lastChar is NOT alphanumeric/closing-paren
-                    if (lastChar === '' || regexStarters.includes(lastChar) || 
-                       (j >= 5 && code.substring(j-5, j+1) === 'return') ||
-                       (j >= 3 && code.substring(j-3, j+1) === 'case')) {
-                        inRegex = true;
-                    }
-                } else if (char === '{') {
-                    balance++;
-                } else if (char === '}') {
-                    balance--;
                 }
+                continue;
+            }
+
+            // 3. Regex (simplified)
+            if (last === 'regex') {
+                if (char === '\\') i++;
+                else if (char === '/') stack.pop();
+                continue;
+            }
+
+            // --- Normal Code Mode ---
+            // Check ends of interpolation
+            if (last === 'code' && char === '}') {
+                stack.pop();
+                continue;
+            }
+
+            // Start String
+            if (char === '"' || char === "'") {
+                // We don't push 'string', we just skip to end of string for simplicity? 
+                // No, multiline strings are not allowed in JS (except with \), but minifiers might do weird things.
+                // Let's just use a simple skip loop.
+                const quote = char;
+                i++;
+                while(i < code.length) {
+                    if (code[i] === '\\') i++;
+                    else if (code[i] === quote) break;
+                    i++;
+                }
+                continue;
+            }
+            
+            // Start Template
+            if (char === '`') {
+                stack.push('template');
+                continue;
+            }
+
+            // Start Comments
+            if (char === '/' && next === '/') {
+                stack.push('line-comment');
+                i++;
+                continue;
+            }
+            if (char === '/' && next === '*') {
+                stack.push('block-comment');
+                i++;
+                continue;
+            }
+
+            // Braces
+            if (char === '{') balance++;
+            else if (char === '}') {
+                if (balance > 0) balance--;
+                // If balance is 0 and we see }, it might be closing an interpolation?
+                // Handled above by checking stack 'code'
             }
         }
         return balance;
