@@ -134,10 +134,18 @@ let currentPreviewMode = 'original'; // 'original' or 'refactored'
 
 // Preview Toggles
 viewOriginalBtn.addEventListener('click', () => {
+    // Prevent switching if no original project is loaded
+    if (!currentProjectFiles.length) {
+        addLog({ message: 'No original project in memory. Upload files or paste HTML first.', type: 'warning' });
+        return;
+    }
+
     // Explicitly handle state to ensure we can switch back
     if (viewOriginalBtn.classList.contains('active')) return;
 
     addLog({ message: 'Switching to Original View...', type: 'info' });
+    console.log('[Diagnostics] Parent: Switching preview to ORIGINAL mode');
+
     viewOriginalBtn.classList.add('active');
     viewRefactoredBtn.classList.remove('active');
     
@@ -157,6 +165,9 @@ viewRefactoredBtn.addEventListener('click', () => {
     }
     
     if (viewRefactoredBtn.classList.contains('active')) return;
+
+    addLog({ message: 'Switching to Refactored View...', type: 'info' });
+    console.log('[Diagnostics] Parent: Switching preview to REFACTORED mode');
 
     viewRefactoredBtn.classList.add('active');
     viewOriginalBtn.classList.remove('active');
@@ -379,6 +390,8 @@ async function updatePreview() {
     const files = mode === 'original' ? currentProjectFiles : refactoredProjectFiles;
     const selectedPage = previewPageSelect.value || (files.find(f => f.name.endsWith('.html'))?.name);
 
+    console.log('[Diagnostics] Parent: updatePreview called', { mode, selectedPage, fileCount: files.length });
+
     if (!files.length || !selectedPage) return;
 
     const blobMap = new Map();
@@ -399,7 +412,9 @@ async function updatePreview() {
             // Text content
             blob = new Blob([file.content], { type: getMimeType(file.name) });
         }
-        blobMap.set(file.name, URL.createObjectURL(blob));
+        const url = URL.createObjectURL(blob);
+        blobMap.set(file.name, url);
+        console.log('[Diagnostics] Parent: Blob created', { mode, name: file.name, url });
     }
 
     // 2. Process the HTML to inject these Blobs
@@ -429,34 +444,59 @@ async function updatePreview() {
         // Group 2: Optional path prefix (./ or /) - WE DISCARD THIS
         // Path matches
         // Group 3: Following delimiter (quote, paren, space, ?, #, or end)
-        const regex = new RegExp(`([\\s"\'\\(=]|^)(\\.?\\/)?` + escapedPath + `([\\s"\'\\)\\?#]|$)`, 'g');
+        const regex = new RegExp(`([\\s"'\\(=]|^)(\\.?\\/)?` + escapedPath + `([\\s"'\\)\\?#]|$)`, 'g');
         
+        const before = htmlContent;
         htmlContent = htmlContent.replace(regex, (match, p1, p2, p3) => {
             return `${p1}${blobUrl}${p3}`;
         });
+        if (before !== htmlContent) {
+            console.log('[Diagnostics] Parent: Rewrote asset path', { mode, path, blobUrl });
+        }
     });
 
-    // Inject Diagnostics Script
+    // Inject Diagnostics Script with mode-aware logging
     const diagnosticsScript = `
     <script>
     (function() {
+        var MODE = "${mode}";
+        console.log("[Diagnostics] Iframe: Preview mode =", MODE);
+
         // Capture Runtime Errors
         window.onerror = function(msg, url, line, col, error) {
+            console.log("[Diagnostics] Iframe: window.onerror fired", msg, url, line, col);
             window.parent.postMessage({ 
                 type: 'preview-error', 
-                data: { message: msg, line: line, col: col, source: url } 
+                data: { message: msg, line: line, col: col, source: url, mode: MODE } 
             }, '*');
         };
         // Capture Promise Rejections
         window.addEventListener('unhandledrejection', function(event) {
+            console.log("[Diagnostics] Iframe: unhandledrejection", event.reason);
             window.parent.postMessage({ 
                 type: 'preview-error', 
-                data: { message: 'Unhandled Promise Rejection: ' + event.reason } 
+                data: { message: 'Unhandled Promise Rejection: ' + event.reason, mode: MODE } 
             }, '*');
         });
-        console.log("Diagnostics Active");
+
+        window.addEventListener('DOMContentLoaded', function() {
+            var domLength = document.body ? document.body.innerHTML.length : 0;
+            var textContent = document.body ? (document.body.textContent || "").replace(/\\s+/g, " ").trim() : "";
+            var textLength = textContent.length;
+            console.log("[Diagnostics] Iframe: DOM snapshot", { mode: MODE, domLength: domLength, textLength: textLength });
+            window.parent.postMessage({
+                type: 'preview-dom',
+                data: {
+                    mode: MODE,
+                    domLength: domLength,
+                    textLength: textLength
+                }
+            }, '*');
+        });
+
+        console.log("Diagnostics Active (" + MODE + ")");
     })();
-    <\/script>
+    <\\/script>
     `;
     
     // Insert before closing head or body
@@ -467,17 +507,30 @@ async function updatePreview() {
     }
 
     const previewBlob = new Blob([htmlContent], { type: 'text/html' });
-    previewFrame.src = URL.createObjectURL(previewBlob);
+    const finalUrl = URL.createObjectURL(previewBlob);
+    console.log('[Diagnostics] Parent: Setting iframe src', { mode, url: finalUrl });
+
+    previewFrame.src = finalUrl;
 }
 
 // Diagnostics Listener
 window.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'preview-error') {
-        const { message, line, source } = event.data.data;
+    if (!event.data || !event.data.type) return;
+
+    if (event.data.type === 'preview-error') {
+        const { message, line, source, mode } = event.data.data;
         addLog({ 
-            message: `⚠️ Runtime Error: ${message} ${line ? `(Line ${line})` : ''}`, 
+            message: `⚠️ Runtime Error${mode ? ' [' + mode + ']' : ''}: ${message} ${line ? `(Line ${line})` : ''}`, 
             type: 'error' 
         });
+        console.log('[Diagnostics] Parent: preview-error', event.data.data);
+    } else if (event.data.type === 'preview-dom') {
+        const { mode, domLength, textLength } = event.data.data;
+        addLog({ 
+            message: `DOM Snapshot [${mode}] - innerHTML length: ${domLength}, text length: ${textLength}`, 
+            type: 'info' 
+        });
+        console.log('[Diagnostics] Parent: preview-dom snapshot', event.data.data);
     }
 });
 
