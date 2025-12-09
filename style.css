@@ -105,7 +105,8 @@ header p {
 
 .file-drop-zone.drag-over {
     border-color: var(--success);
-    background: rgba(16, 185, 129, 0.1);
+    background: rgba(16, 185, 129, 0.2);
+    transform: scale(1.02);
 }
 
 .file-drop-zone input {

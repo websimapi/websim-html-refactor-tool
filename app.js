@@ -187,7 +187,7 @@ previewPageSelect.addEventListener('change', updatePreview);
 
 // Enhanced File Handler with ZIP Support
 async function handleFile(fileOrFiles) {
-    // Normalize input: support FileList, Array<File>, or single File
+    // Normalize input
     const files = (fileOrFiles instanceof FileList || Array.isArray(fileOrFiles))
         ? Array.from(fileOrFiles)
         : [fileOrFiles];
@@ -196,16 +196,19 @@ async function handleFile(fileOrFiles) {
     refactoredProjectFiles = [];
     previewPageSelect.innerHTML = '';
     
-    addLog({ message: `Processing input...`, type: 'info' });
+    addLog({ message: `Processing ${files.length} items...`, type: 'info' });
 
     const processedFiles = [];
 
     // 1. Expand ZIPs and collect all files
     for (const file of files) {
-        const fileType = file.type || '';
+        if (!file || !file.name) continue; // Skip invalid
         
-        // Check for ZIP (by extension or mime)
-        if (file.name.endsWith('.zip') || fileType.includes('zip')) {
+        const fileName = file.name.toLowerCase();
+        const fileType = (file.type || '').toLowerCase();
+        
+        // Check for ZIP
+        if (fileName.endsWith('.zip') || fileType.includes('zip') || fileType.includes('compressed')) {
             try {
                 addLog({ message: `Unzipping ${file.name}...`, type: 'info' });
                 const zip = await JSZip.loadAsync(file);
@@ -213,7 +216,8 @@ async function handleFile(fileOrFiles) {
                 // Collect entries
                 const entries = [];
                 zip.forEach((relativePath, zipEntry) => {
-                    if (!zipEntry.dir && !relativePath.startsWith('__MACOSX')) {
+                    // Filter junk
+                    if (!zipEntry.dir && !relativePath.startsWith('__MACOSX') && !relativePath.includes('/.')) {
                         entries.push({ path: relativePath, entry: zipEntry });
                     }
                 });
@@ -232,7 +236,11 @@ async function handleFile(fileOrFiles) {
         } else {
             // Regular file
             // Check for custom filepath from drag-drop traversal
-            const path = file.filepath || file.webkitRelativePath || file.name;
+            let path = file.filepath || file.webkitRelativePath || file.name;
+            
+            // Clean path if it starts with /
+            if (path && path.startsWith('/')) path = path.substring(1);
+            
             processedFiles.push({
                 name: path,
                 blob: file
@@ -275,17 +283,18 @@ async function handleFile(fileOrFiles) {
     if (htmlFile && htmlFile.name.includes('/')) {
         const rootDir = htmlFile.name.substring(0, htmlFile.name.lastIndexOf('/') + 1);
         
-        // Strip rootDir from all files if they start with it
-        currentProjectFiles.forEach(f => {
-            if (f.name && typeof f.name === 'string' && f.name.startsWith(rootDir)) {
-                f.name = f.name.substring(rootDir.length);
-            }
-        });
-        
-        // Remove empty filenames that might result from stripping rootDir (e.g. the dir entry itself)
-        currentProjectFiles = currentProjectFiles.filter(f => f.name && f.name.trim().length > 0);
-
-        addLog({ message: `Detected project root: ${rootDir}. Paths normalized.`, type: 'info' });
+        if (rootDir.length > 0) {
+            // Strip rootDir from all files if they start with it
+            currentProjectFiles.forEach(f => {
+                if (f.name && typeof f.name === 'string' && f.name.startsWith(rootDir)) {
+                    f.name = f.name.substring(rootDir.length);
+                }
+            });
+            
+            // Remove empty filenames
+            currentProjectFiles = currentProjectFiles.filter(f => f.name && f.name.trim().length > 0);
+            addLog({ message: `Detected project root: ${rootDir}. Paths normalized.`, type: 'info' });
+        }
     }
 
     // Re-populate Dropdown for HTML (after normalization)
@@ -482,6 +491,7 @@ dropZone.addEventListener('dragleave', () => {
 
 dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
+    e.stopPropagation();
     dropZone.classList.remove('drag-over');
 
     const items = e.dataTransfer.items;
@@ -489,68 +499,83 @@ dropZone.addEventListener('drop', async (e) => {
 
     addLog({ message: 'Scanning dropped files...', type: 'info' });
 
-    const files = [];
-    const queue = [];
-
-    // Helper to traverse directories
-    const traverse = (entry, path = '') => {
+    // Robust Directory Traversal
+    const traverseFileTree = (item, path = '') => {
         return new Promise((resolve) => {
-            if (entry.isFile) {
-                entry.file(file => {
-                    // Attach full path for handleFile
-                    file.filepath = path + file.name;
+            if (item.isFile) {
+                item.file(file => {
+                    // Attach full path for project structure preservation
+                    // If path is empty, it's a root file.
+                    file.filepath = path + file.name; 
                     resolve([file]);
+                }, (err) => {
+                    console.warn('Failed to read file entry:', err);
+                    resolve([]);
                 });
-            } else if (entry.isDirectory) {
-                const dirReader = entry.createReader();
-                const allFiles = [];
+            } else if (item.isDirectory) {
+                const dirReader = item.createReader();
+                const entries = [];
                 
-                const readBatch = () => {
-                    dirReader.readEntries(async (entries) => {
-                        if (entries.length === 0) {
-                            resolve(allFiles);
+                const readEntries = () => {
+                    dirReader.readEntries(async (batch) => {
+                        if (!batch.length) {
+                            resolve(entries);
                         } else {
-                            const promises = entries.map(subEntry => traverse(subEntry, path + entry.name + '/'));
+                            const promises = batch.map(entry => traverseFileTree(entry, path + item.name + '/'));
                             const results = await Promise.all(promises);
-                            allFiles.push(...results.flat());
-                            readBatch();
+                            entries.push(...results.flat());
+                            readEntries(); // Recursive read for next batch
                         }
+                    }, (err) => {
+                        console.warn('Failed to read directory:', err);
+                        resolve(entries); // Return partial results
                     });
                 };
-                readBatch();
+                readEntries();
             } else {
                 resolve([]);
             }
         });
     };
 
+    const processingQueue = [];
+    const directFiles = [];
+
     for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        // webkitGetAsEntry is standard for DnD in modern browsers
-        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-        
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : (item.getAsEntry ? item.getAsEntry() : null);
+
         if (entry) {
-            queue.push(traverse(entry));
+            processingQueue.push(traverseFileTree(entry));
         } else if (item.kind === 'file') {
             const file = item.getAsFile();
-            if (file) files.push(file);
+            if (file) directFiles.push(file);
         }
     }
 
     try {
-        const results = await Promise.all(queue);
-        const validFiles = results.flat().concat(files);
+        const results = await Promise.all(processingQueue);
+        const allFiles = results.flat().concat(directFiles);
         
-        if (validFiles.length > 0) {
-            handleFile(validFiles);
+        if (allFiles.length > 0) {
+            await handleFile(allFiles);
         } else {
-            addLog({ message: 'No valid files found in drop.', type: 'warning' });
+            addLog({ message: 'No accessible files found in drop.', type: 'warning' });
         }
     } catch (err) {
         console.error(err);
-        addLog({ message: 'Error scanning files: ' + err.message, type: 'error' });
+        addLog({ message: 'Error processing files: ' + err.message, type: 'error' });
     }
 });
+
+// Global drag prevention to stop browser opening files if missed
+window.addEventListener('dragover', (e) => e.preventDefault(), false);
+window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (!dropZone.contains(e.target)) {
+        addLog({ message: '⚠️ Ignored drop outside the upload area.', type: 'warning' });
+    }
+}, false);
 
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) {
