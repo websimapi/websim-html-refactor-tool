@@ -499,12 +499,9 @@ async function updatePreview() {
     <\\/script>
     `;
     
-    // Insert before closing head or body
-    if (htmlContent.includes('</head>')) {
-        htmlContent = htmlContent.replace('</head>', diagnosticsScript + '</head>');
-    } else {
-        htmlContent += diagnosticsScript;
-    }
+    // Safer Injection: Append to end of content to avoid breaking existing script tags/strings
+    // replacing </head> or </body> is risky if those strings exist inside JS variables
+    htmlContent += diagnosticsScript;
 
     const previewBlob = new Blob([htmlContent], { type: 'text/html' });
     const finalUrl = URL.createObjectURL(previewBlob);
@@ -543,7 +540,8 @@ function getMimeType(filename) {
 }
 
 // File Upload Listeners
-dropZone.addEventListener('click', () => fileInput.click());
+// REMOVED: dropZone.addEventListener('click', () => fileInput.click()); 
+// The label element automatically triggers the input. Explicit click listener causes double-trigger issues.
 
 dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();

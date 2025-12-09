@@ -399,10 +399,12 @@ document.addEventListener('DOMContentLoaded', () => {
         let inComment = false;
         let commentType = ''; // '//' or '/*'
         let escape = false;
+        let inRegex = false;
 
         for (let i = 0; i < code.length; i++) {
             const char = code[i];
             const next = code[i+1] || '';
+            const prev = i > 0 ? code[i-1] : '';
 
             if (inString) {
                 if (escape) {
@@ -419,8 +421,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     inComment = false;
                     i++; // skip /
                 }
+            } else if (inRegex) {
+                if (escape) {
+                    escape = false;
+                } else if (char === '\\') {
+                    escape = true;
+                } else if (char === '/') {
+                    inRegex = false;
+                }
             } else {
-                // Not in string or comment
+                // Not in string, comment, or regex
                 if (char === '"' || char === "'" || char === '`') {
                     inString = true;
                     stringChar = char;
@@ -432,6 +442,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     inComment = true;
                     commentType = '/*';
                     i++;
+                } else if (char === '/') {
+                    // Check for Regex literal vs Division
+                    // Heuristic: Regex usually follows operators, keywords, or start of line.
+                    // Division usually follows numbers, identifiers, or closing parens.
+                    // We look backwards for the last significant character.
+                    let j = i - 1;
+                    while (j >= 0 && /\s/.test(code[j])) j--;
+                    
+                    const lastChar = j >= 0 ? code[j] : '';
+                    // List of chars that suggest the next slash is a Regex
+                    const regexStarters = ['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';'];
+                    
+                    // Simple heuristic: if last char is an operator or block opener, it's likely a regex.
+                    // If it's a word character or digit or closing paren, likely division.
+                    // Note: 'return /abc/' works because lastChar is 'n' (part of keyword). Needs full tokenizer for perfect accuracy.
+                    // But for refactoring chunks, usually split points are between functions, so context is clean.
+                    
+                    // IMPROVED HEURISTIC: Check if lastChar is NOT alphanumeric/closing-paren
+                    if (lastChar === '' || regexStarters.includes(lastChar) || 
+                       (j >= 5 && code.substring(j-5, j+1) === 'return') ||
+                       (j >= 3 && code.substring(j-3, j+1) === 'case')) {
+                        inRegex = true;
+                    }
                 } else if (char === '{') {
                     balance++;
                 } else if (char === '}') {
