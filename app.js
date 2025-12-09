@@ -155,7 +155,10 @@ previewPageSelect.addEventListener('change', updatePreview);
 
 // Enhanced File Handler with ZIP Support
 async function handleFile(fileOrFiles) {
-    const files = (fileOrFiles instanceof FileList) ? Array.from(fileOrFiles) : [fileOrFiles];
+    // Normalize input: support FileList, Array<File>, or single File
+    const files = (fileOrFiles instanceof FileList || Array.isArray(fileOrFiles))
+        ? Array.from(fileOrFiles)
+        : [fileOrFiles];
     
     currentProjectFiles = [];
     refactoredProjectFiles = [];
