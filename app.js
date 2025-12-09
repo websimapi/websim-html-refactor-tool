@@ -1,6 +1,9 @@
 import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
+import FileSaver from 'file-saver';
 import { RefactorEngine } from './refactor-engine.js';
+
+// Robust export handling for file-saver (handles both default fn and named export via default obj)
+const saveAs = FileSaver.saveAs || FileSaver;
 
 // DOM Elements
 const dropZone = document.getElementById('dropZone');
