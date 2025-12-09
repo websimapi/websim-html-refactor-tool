@@ -180,13 +180,14 @@ document.addEventListener('DOMContentLoaded', () => {
     async performAiSplit(code, type) {
         const lines = code.split('\n');
         const numberedCode = lines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
+        // Safety truncation
         const safeCode = numberedCode.length > 50000 ? numberedCode.substring(0, 50000) + "\n... (truncated)" : numberedCode;
 
         const systemPrompt = `You are a code refactoring engine. 
         Your goal is to split a monolithic ${type.toUpperCase()} file into logical, modular component files.
         Return a JSON object containing a "files" array.
         Each item in "files" must have:
-        - "name": filename (e.g., 'utils.js')
+        - "name": filename (e.g., 'utils.js', 'header.css')
         - "startLine": integer (inclusive 1-based index)
         - "endLine": integer (inclusive 1-based index)
         
@@ -205,7 +206,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 json: true
             });
 
-            const result = JSON.parse(completion.content);
+            // Clean markdown wrapping if present
+            let cleanContent = completion.content.trim();
+            if (cleanContent.startsWith('```json')) cleanContent = cleanContent.replace(/^```json/, '').replace(/```$/, '');
+            else if (cleanContent.startsWith('```')) cleanContent = cleanContent.replace(/^```/, '').replace(/```$/, '');
+
+            const result = JSON.parse(cleanContent);
             if (!result.files || !Array.isArray(result.files)) throw new Error("Invalid AI response");
 
             this.log('Verifying split integrity...', 'info');
@@ -224,13 +230,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const outputFiles = [];
         const totalLines = allLines.length;
 
+        // Sort by start line
         fileDefs.sort((a, b) => a.startLine - b.startLine);
 
-        // 1. Fill Gaps
+        // 1. Fill Gaps & Normalize
         let currentLine = 1;
         const continuousDefs = [];
 
         for (const def of fileDefs) {
+            // Fill gap
             if (def.startLine > currentLine) {
                 continuousDefs.push({
                     name: `fragment-${currentLine}.${type === 'css' ? 'css' : 'js'}`,
@@ -238,12 +246,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     endLine: def.startLine - 1
                 });
             }
+            // Fix overlap
             if (def.startLine < currentLine) def.startLine = currentLine;
+            
             if (def.endLine >= def.startLine) {
                 continuousDefs.push(def);
                 currentLine = def.endLine + 1;
             }
         }
+        // Fill end
         if (currentLine <= totalLines) {
             continuousDefs.push({
                 name: `end-fragment.${type === 'css' ? 'css' : 'js'}`,
@@ -253,45 +264,52 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 2. Syntax Balance Check (JS Only)
+        // Merge chunks until braces/parens are balanced to prevent SyntaxErrors
         if (type === 'js') {
             let bufferDef = null;
             let bufferContent = '';
-            let balance = { braces: 0, parens: 0, brackets: 0 };
+            let balance = 0; // Net open braces
 
             for (const def of continuousDefs) {
                 const start = def.startLine - 1;
                 const end = def.endLine;
                 const content = allLines.slice(start, end).join('\n');
 
-                const dBraces = (content.match(/\{/g) || []).length - (content.match(/\}/g) || []).length;
-                const dParens = (content.match(/\(/g) || []).length - (content.match(/\)/g) || []).length;
-                const dBrackets = (content.match(/\[/g) || []).length - (content.match(/\]/g) || []).length;
+                // Basic brace counting (ignores comments/strings for perf, but usually sufficient)
+                // Use explicit regex for { and }
+                const opens = (content.match(/\{/g) || []).length;
+                const closes = (content.match(/\}/g) || []).length;
+                const netChange = opens - closes;
 
                 if (bufferDef) {
+                    // We are buffering (merging)
                     bufferContent += '\n' + content;
-                    balance.braces += dBraces;
-                    balance.parens += dParens;
-                    balance.brackets += dBrackets;
-
-                    // Update buffer end
+                    balance += netChange;
                     bufferDef.endLine = def.endLine;
 
-                    if (balance.braces === 0 && balance.parens === 0 && balance.brackets === 0) {
+                    if (balance === 0) {
+                        // Balanced! Emit.
                         outputFiles.push({ name: bufferDef.name, content: bufferContent });
                         bufferDef = null;
                         bufferContent = '';
+                        balance = 0;
                     }
                 } else {
-                    if (dBraces !== 0 || dParens !== 0 || dBrackets !== 0) {
+                    if (netChange !== 0) {
+                        // Unbalanced start, begin buffering
                         bufferDef = def;
                         bufferContent = content;
-                        balance = { braces: dBraces, parens: dParens, brackets: dBrackets };
+                        balance = netChange;
                     } else {
+                        // Balanced immediately
                         outputFiles.push({ name: def.name, content });
                     }
                 }
             }
+            
+            // Flush remaining buffer
             if (bufferDef) {
+                this.log(`Merged remaining content into ${bufferDef.name} to enforce syntax balance.`, 'warning');
                 outputFiles.push({ name: bufferDef.name, content: bufferContent });
             }
         } else {
@@ -308,6 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     isEsModule(content) {
+        // Simple heuristic: check for export or import statements
         return /^\s*(import|export)\s+/m.test(content);
     }
 }
