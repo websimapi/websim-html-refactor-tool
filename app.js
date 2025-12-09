@@ -134,10 +134,19 @@ let currentPreviewMode = 'original'; // 'original' or 'refactored'
 
 // Preview Toggles
 viewOriginalBtn.addEventListener('click', () => {
+    // Explicitly handle state to ensure we can switch back
+    if (viewOriginalBtn.classList.contains('active')) return;
+
+    addLog({ message: 'Switching to Original View...', type: 'info' });
     viewOriginalBtn.classList.add('active');
     viewRefactoredBtn.classList.remove('active');
+    
     currentPreviewMode = 'original';
+    
+    // Force refresh the selection logic
     refreshPageSelect();
+    
+    // Slight delay to allow UI to settle if needed, but synchronous update is usually better
     updatePreview();
 });
 
@@ -146,6 +155,9 @@ viewRefactoredBtn.addEventListener('click', () => {
         addLog({ message: 'Refactor the project first to see the result.', type: 'warning' });
         return;
     }
+    
+    if (viewRefactoredBtn.classList.contains('active')) return;
+
     viewRefactoredBtn.classList.add('active');
     viewOriginalBtn.classList.remove('active');
     currentPreviewMode = 'refactored';
@@ -590,6 +602,8 @@ refactorBtn.addEventListener('click', async () => {
     if (mainHtmlName) {
         const fileIdx = currentProjectFiles.findIndex(f => f.name === mainHtmlName);
         if (fileIdx !== -1) {
+            // Update content but preserve original blob reference if meaningful? 
+            // Actually, if we edit text, the blob is stale.
             currentProjectFiles[fileIdx].content = htmlInput.value;
             currentProjectFiles[fileIdx].fileObject = null; // Invalidate binary
         }
@@ -627,8 +641,8 @@ refactorBtn.addEventListener('click', async () => {
         const htmlFiles = currentProjectFiles.filter(f => f.name.endsWith('.html'));
         const assetFiles = currentProjectFiles.filter(f => !f.name.endsWith('.html'));
         
-        // Pass assets through
-        refactoredProjectFiles = [...assetFiles];
+        // Pass assets through safely (clone objects to prevent shared reference mutations)
+        refactoredProjectFiles = assetFiles.map(f => ({ ...f }));
 
         for (const htmlFile of htmlFiles) {
             addLog({ message: `Processing ${htmlFile.name}...`, type: 'info' });

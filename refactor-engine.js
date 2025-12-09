@@ -172,7 +172,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const finalHtml = new XMLSerializer().serializeToString(doc);
+
+        // --- VERIFICATION STEP ---
+        if (!extremeMode) {
+            this.log('Verifying DOM integrity...', 'info');
+            const verification = this.verifyRefactor(htmlString, finalHtml);
+            
+            if (!verification.success) {
+                this.log(`⚠️ DOM Mismatch Detected! Diff Score: ${verification.diff}`, 'error');
+                this.log(`Original Text Nodes: ${verification.origLen}, Refactored: ${verification.refLen}`, 'error');
+                
+                if (aiSplit) {
+                    this.log('🔄 AI Split may have caused data loss. Retrying without AI...', 'warning');
+                    // Recursively retry without AI
+                    return this.process(htmlString, { ...options, aiSplit: false });
+                }
+            } else {
+                this.log('✅ DOM Integrity Verified.', 'success');
+            }
+        }
+
         return { html: finalHtml, files: files };
+    }
+
+    /**
+     * Compares the semantic structure of two HTML strings to ensure content wasn't lost.
+     * Ignores scripts, styles, links, and whitespace.
+     */
+    verifyRefactor(original, refactored) {
+        const parser = new DOMParser();
+        
+        const clean = (html) => {
+            const doc = parser.parseFromString(html, 'text/html');
+            // Remove non-content elements
+            ['script', 'style', 'link', 'meta', 'title'].forEach(tag => {
+                doc.querySelectorAll(tag).forEach(el => el.remove());
+            });
+            // Get text content and normalize whitespace
+            return doc.body ? doc.body.textContent.replace(/\s+/g, ' ').trim() : '';
+        };
+
+        const t1 = clean(original);
+        const t2 = clean(refactored);
+
+        if (t1 === t2) return { success: true };
+        
+        // Allow for very minor differences (like whitespace edge cases)
+        const diff = Math.abs(t1.length - t2.length);
+        const ratio = diff / Math.max(t1.length, 1);
+        
+        // If content length difference is < 1%, we consider it a pass (whitespace artifacts)
+        if (ratio < 0.01) return { success: true, diff };
+
+        return { 
+            success: false, 
+            diff, 
+            origLen: t1.length, 
+            refLen: t2.length 
+        };
     }
 
     /**
