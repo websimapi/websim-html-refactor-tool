@@ -281,9 +281,17 @@ async function handleFile(fileOrFiles) {
     // 2. Read content
     for (const pFile of processedFiles) {
         const name = pFile.name || 'unknown-file';
+        
+        // Filter out junk/directory artifacts that lack extensions and are likely mistakenly read directories
+        // (User logs showed "html", "js", "javascript" as files)
+        if (!name.includes('.') && ['html', 'css', 'js', 'javascript', 'assets', 'images'].includes(name.toLowerCase())) {
+            addLog({ message: `Skipping invalid file entry: "${name}"`, type: 'warning' });
+            continue;
+        }
+
         const ext = name.split('.').pop().toLowerCase();
         // Robust binary check by extension (safer for unzipped blobs)
-        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'woff', 'woff2', 'ttf', 'eot'].includes(ext);
+        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'woff', 'woff2', 'ttf', 'eot', 'otf', 'wav', 'mp3'].includes(ext);
         
         let content;
         if (isImage) {
@@ -439,15 +447,22 @@ async function updatePreview() {
         // Escape path for Regex
         const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         
-        // Robust Regex:
-        // Group 1: Preceding delimiter (quote, paren, space, =, or start)
-        // Group 2: Optional path prefix (./ or /) - WE DISCARD THIS
-        // Path matches
-        // Group 3: Following delimiter (quote, paren, space, ?, #, or end)
+        // Robust Regex Strategy:
+        // We want to replace paths that appear in src="", href="", url(), or imports.
+        // We must avoid replacing random text content.
+        
+        // Pattern: 
+        // 1. Delimiter (quote, parens, or equals/whitespace if unquoted)
+        // 2. Optional path prefix (./ or /)
+        // 3. The exact filename
+        // 4. End delimiter
         const regex = new RegExp(`([\\s"'\\(=]|^)(\\.?\\/)?` + escapedPath + `([\\s"'\\)\\?#]|$)`, 'g');
         
         const before = htmlContent;
         htmlContent = htmlContent.replace(regex, (match, p1, p2, p3) => {
+            // Check context: If p1 is a quote, we are likely safe. 
+            // If p1 is whitespace, it's riskier (could be text), but often necessary for srcset or CSS.
+            // We assume the strict filename match with extension helps avoid false positives.
             return `${p1}${blobUrl}${p3}`;
         });
         if (before !== htmlContent) {

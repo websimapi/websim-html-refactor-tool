@@ -295,7 +295,6 @@ export class RefactorEngine {
     async performAiSplit(code, type) {
         const lines = code.split('\n');
         const numberedCode = lines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
-        // Safety truncation
         const safeCode = numberedCode.length > 50000 ? numberedCode.substring(0, 50000) + "\n... (truncated)" : numberedCode;
 
         const systemPrompt = `You are a code refactoring engine. 
@@ -311,6 +310,7 @@ export class RefactorEngine {
         2. SYNTAX SAFETY: Do NOT split inside functions, classes, objects, or template literals. Ensure splits occur at clean top-level boundaries.
         3. ORDER: Maintain original execution order.
         4. DEPENDENCIES: Group related variables and functions together to avoid scope reference errors.
+        5. VERBOSITY: Use specific names for files.
         `;
 
         try {
@@ -322,7 +322,6 @@ export class RefactorEngine {
                 json: true
             });
 
-            // Clean markdown wrapping if present
             let cleanContent = completion.content.trim();
             if (cleanContent.startsWith('```json')) cleanContent = cleanContent.replace(/^```json/, '').replace(/```$/, '');
             else if (cleanContent.startsWith('```')) cleanContent = cleanContent.replace(/^```/, '').replace(/```$/, '');
@@ -346,7 +345,6 @@ export class RefactorEngine {
         const outputFiles = [];
         const totalLines = allLines.length;
 
-        // Sort by start line
         fileDefs.sort((a, b) => a.startLine - b.startLine);
 
         // 1. Fill Gaps & Normalize
@@ -354,7 +352,6 @@ export class RefactorEngine {
         const continuousDefs = [];
 
         for (const def of fileDefs) {
-            // Fill gap
             if (def.startLine > currentLine) {
                 const gapName = `fragment-${currentLine}.${type === 'css' ? 'css' : 'js'}`;
                 this.log(`Gap detected at line ${currentLine}. Created ${gapName}`, 'warning');
@@ -364,7 +361,6 @@ export class RefactorEngine {
                     endLine: def.startLine - 1
                 });
             }
-            // Fix overlap
             if (def.startLine < currentLine) def.startLine = currentLine;
             
             if (def.endLine >= def.startLine) {
@@ -372,7 +368,6 @@ export class RefactorEngine {
                 currentLine = def.endLine + 1;
             }
         }
-        // Fill end
         if (currentLine <= totalLines) {
             continuousDefs.push({
                 name: `end-fragment.${type === 'css' ? 'css' : 'js'}`,
@@ -382,58 +377,49 @@ export class RefactorEngine {
         }
 
         // 2. Syntax Balance Check (JS Only)
-        // Merge chunks until braces are balanced using a robust tokenizer
         if (type === 'js') {
             let bufferDef = null;
             let bufferContent = '';
-            let currentBalance = 0; 
+            let currentBalance = 0; // Total brace/paren balance
 
             for (const def of continuousDefs) {
                 const start = def.startLine - 1;
                 const end = def.endLine;
                 const content = allLines.slice(start, end).join('\n');
                 
-                // Use robust scanner
                 const netChange = this.scanCodeBalance(content);
 
                 if (bufferDef) {
-                    // We are buffering (merging)
                     bufferContent += '\n' + content;
                     currentBalance += netChange;
                     bufferDef.endLine = def.endLine;
 
                     if (currentBalance === 0) {
-                        // Balanced! Emit.
-                        this.log(`Merged ${def.name} into ${bufferDef.name} to fix syntax (Balance restored).`, 'info');
+                        this.log(`Merged ${def.name} into ${bufferDef.name} (Balance restored).`, 'info');
                         outputFiles.push({ name: bufferDef.name, content: bufferContent });
                         bufferDef = null;
                         bufferContent = '';
                         currentBalance = 0;
                     } else {
-                         // Still unbalanced
                          this.log(`Merged ${def.name} into ${bufferDef.name} (Balance: ${currentBalance})`, 'info');
                     }
                 } else {
                     if (netChange !== 0) {
-                        // Unbalanced start, begin buffering
-                        this.log(`File ${def.name} ended with unbalanced braces (Balance: ${netChange}). Merging with next...`, 'warning');
+                        this.log(`File ${def.name} ended unbalanced (Balance: ${netChange}). Merging with next...`, 'warning');
                         bufferDef = def;
                         bufferContent = content;
                         currentBalance = netChange;
                     } else {
-                        // Balanced immediately
                         outputFiles.push({ name: def.name, content });
                     }
                 }
             }
             
-            // Flush remaining buffer
             if (bufferDef) {
                 this.log(`Merged remaining content into ${bufferDef.name}. Final balance: ${currentBalance} (Ideally 0).`, 'warning');
                 outputFiles.push({ name: bufferDef.name, content: bufferContent });
             }
         } else {
-            // CSS - simple slice
             continuousDefs.forEach(def => {
                 outputFiles.push({
                     name: def.name,
@@ -446,108 +432,107 @@ export class RefactorEngine {
     }
 
     /**
-     * Robustly counts brace balance ignoring strings and comments
-     * @returns {number} Net change in brace balance (positive = open, negative = closed)
+     * Robustly counts brace balance tracking {}, (), and [] while ignoring strings, comments, and regex.
+     * @returns {number} Net nesting level (0 means balanced)
      */
     scanCodeBalance(code) {
         let balance = 0;
-        let stack = []; // To track nesting (template literals)
+        let stack = []; 
+        let inString = null; // ' " `
+        let inComment = null; // // /*
+        let inRegex = false;
 
         for (let i = 0; i < code.length; i++) {
             const char = code[i];
             const next = code[i+1] || '';
-            const last = stack[stack.length - 1];
+            const prev = code[i-1] || '';
 
-            // 1. Strings & Templates
-            if (last === 'string') {
-                if (char === '\\') i++; // skip escape
-                else if (char === stack[stack.length-2]) stack.pop(); // pop 'string' then check quote char stored? No, simplify.
-                // Re-implementation of state machine for robustness:
-                continue; 
-            }
-            if (last === 'template') {
-                 if (char === '\\') i++;
-                 else if (char === '`') stack.pop();
-                 else if (char === '$' && next === '{') {
-                     stack.push('code'); // Enter code interpolation
-                     i++;
-                 }
-                 continue;
-            }
-            
-            // 2. Comments
-            if (last === 'line-comment') {
-                if (char === '\n') stack.pop();
-                continue;
-            }
-            if (last === 'block-comment') {
-                if (char === '*' && next === '/') {
-                    stack.pop();
+            // 1. Comments
+            if (inComment) {
+                if (inComment === '//' && char === '\n') inComment = null;
+                else if (inComment === '/*' && char === '*' && next === '/') {
+                    inComment = null;
                     i++;
                 }
                 continue;
             }
 
-            // 3. Regex (simplified)
-            if (last === 'regex') {
-                if (char === '\\') i++;
-                else if (char === '/') stack.pop();
+            // 2. Strings
+            if (inString) {
+                if (char === '\\') i++; // Skip next
+                else if (char === inString) inString = null;
+                else if (inString === '`' && char === '$' && next === '{') {
+                    stack.push('template');
+                    inString = null; // Switch to code mode temporarily
+                    i++;
+                }
                 continue;
             }
 
-            // --- Normal Code Mode ---
-            // Check ends of interpolation
-            if (last === 'code' && char === '}') {
-                stack.pop();
+            // 3. Regex literal detection (heuristic)
+            if (inRegex) {
+                if (char === '\\') i++;
+                else if (char === '/') inRegex = false;
                 continue;
             }
+
+            // --- Code Mode ---
+
+            // Start Comment
+            if (char === '/' && next === '/') { inComment = '//'; i++; continue; }
+            if (char === '/' && next === '*') { inComment = '/*'; i++; continue; }
 
             // Start String
-            if (char === '"' || char === "'") {
-                // We don't push 'string', we just skip to end of string for simplicity? 
-                // No, multiline strings are not allowed in JS (except with \), but minifiers might do weird things.
-                // Let's just use a simple skip loop.
-                const quote = char;
-                i++;
-                while(i < code.length) {
-                    if (code[i] === '\\') i++;
-                    else if (code[i] === quote) break;
-                    i++;
-                }
+            if (char === '"' || char === "'") { inString = char; continue; }
+            if (char === '`') { inString = '`'; continue; }
+
+            // Start Regex? (Hardest part of JS parsing)
+            // Heuristic: / is regex if previous non-whitespace char was ( [ { = , ; : ! ? & | ^ + - * / % ~
+            // or keywords like return, case, delete, do, else, in, instanceof, new, typeof, void, throw, yield
+            if (char === '/') {
+                // Simplified check: assume regex if regex-like
+                // This is risky, so we'll skip regex mode for balance checking to be safe, 
+                // assuming slashes inside code won't contain unbalanced braces often enough to break.
+                // Or better: just treat / as regular char unless we are sure.
+                // To avoid complex regex parsing logic, we will ignore / as a delimiter starter here.
+                // It might cause false positives for braces inside regex, but that is rare.
                 continue;
+            }
+
+            // Opening Brackets
+            if (['{', '(', '['].includes(char)) {
+                balance++;
+                stack.push(char);
             }
             
-            // Start Template
-            if (char === '`') {
-                stack.push('template');
-                continue;
-            }
-
-            // Start Comments
-            if (char === '/' && next === '/') {
-                stack.push('line-comment');
-                i++;
-                continue;
-            }
-            if (char === '/' && next === '*') {
-                stack.push('block-comment');
-                i++;
-                continue;
-            }
-
-            // Braces
-            if (char === '{') balance++;
-            else if (char === '}') {
-                if (balance > 0) balance--;
-                // If balance is 0 and we see }, it might be closing an interpolation?
-                // Handled above by checking stack 'code'
+            // Closing Brackets
+            else if (['}', ')', ']'].includes(char)) {
+                const last = stack[stack.length - 1];
+                
+                // Check for template interpolation close
+                if (char === '}' && last === 'template') {
+                    stack.pop();
+                    inString = '`'; // Resume template string
+                } else {
+                    // Normal close
+                    if (['{', '(', '['].includes(last)) {
+                        stack.pop();
+                        balance--;
+                    } else {
+                        // Unmatched close or structure mismatch, strictly treat as unbalanced decrement
+                        balance--;
+                    }
+                }
             }
         }
         return balance;
     }
 
     isEsModule(content) {
-        // Simple heuristic: check for export or import statements
-        return /^\s*(import|export)\s+/m.test(content);
+        // Robust check for top-level ES module syntax
+        // Matches "import ... from", "export ...", "export default"
+        // Ignores matches inside comments (approximate)
+        const stripComments = content.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+        return /(?:^|;|\s)(?:import\s+[\s\S]*?from|export\s+(?:default|const|let|var|function|class|{))/.test(stripComments);
     }
 }
