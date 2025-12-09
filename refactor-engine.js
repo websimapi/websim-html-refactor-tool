@@ -148,7 +148,8 @@ export class RefactorEngine {
             let escapedBody = bodyContent
                 .replace(/\\/g, '\\\\')
                 .replace(/`/g, '\\`')
-                .replace(/\$\{/g, '\\${');
+                .replace(/\$\{/g, '\\${')
+                .replace(/<\/script>/gi, '<\\/script>'); // Escape closing script tags to prevent early termination
 
             const generatorContent = `
 document.addEventListener('DOMContentLoaded', () => {

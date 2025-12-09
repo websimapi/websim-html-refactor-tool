@@ -236,18 +236,21 @@ async function handleFile(fileOrFiles) {
     }
 
     // NORMALIZE PATHS: Detect root folder (if dragged folder)
-    const htmlFile = currentProjectFiles.find(f => f.name.toLowerCase().endsWith('index.html')) || currentProjectFiles.find(f => f.name.endsWith('.html'));
+    const htmlFile = currentProjectFiles.find(f => f.name && (f.name.toLowerCase().endsWith('index.html') || f.name.endsWith('.html')));
     
     if (htmlFile && htmlFile.name.includes('/')) {
         const rootDir = htmlFile.name.substring(0, htmlFile.name.lastIndexOf('/') + 1);
         
         // Strip rootDir from all files if they start with it
         currentProjectFiles.forEach(f => {
-            if (f.name.startsWith(rootDir)) {
+            if (f.name && f.name.startsWith(rootDir)) {
                 f.name = f.name.substring(rootDir.length);
             }
         });
         
+        // Remove empty filenames that might result from stripping rootDir (e.g. the dir entry itself)
+        currentProjectFiles = currentProjectFiles.filter(f => f.name && f.name.trim().length > 0);
+
         addLog({ message: `Detected project root: ${rootDir}. Paths normalized.`, type: 'info' });
     }
 
@@ -295,9 +298,11 @@ function finalizeUpload() {
     
     // Sort files so index.html is first
     currentProjectFiles.sort((a, b) => {
-        if (a.name === 'index.html') return -1;
-        if (b.name === 'index.html') return 1;
-        return a.name.localeCompare(b.name);
+        const nameA = a.name || '';
+        const nameB = b.name || '';
+        if (nameA === 'index.html') return -1;
+        if (nameB === 'index.html') return 1;
+        return nameA.localeCompare(nameB);
     });
 
     // Load the first HTML file content into the editor
@@ -325,6 +330,9 @@ async function updatePreview() {
 
     // 1. Create Blobs for all assets
     for (const file of files) {
+        // Skip invalid files
+        if (!file.name) continue;
+
         let blob;
         if (file.fileObject) {
             blob = file.fileObject;
@@ -346,10 +354,16 @@ async function updatePreview() {
     let htmlContent = targetFile.content; 
     
     // Sort keys by length desc to avoid partial matches
-    const paths = Array.from(blobMap.keys()).sort((a, b) => b.length - a.length);
+    // Filter out undefined/empty keys
+    const paths = Array.from(blobMap.keys()).filter(k => !!k).sort((a, b) => b.length - a.length);
     
     paths.forEach(path => {
         if (path === selectedPage) return;
+
+        // CRITICAL FIX: Skip files without extension to prevent accidental replacement 
+        // of common words, variables, or protocols (e.g. 'http' matching 'https://')
+        if (path.indexOf('.') === -1) return;
+
         const blobUrl = blobMap.get(path);
         
         // Escape path for Regex
