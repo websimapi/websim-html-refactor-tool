@@ -137,6 +137,7 @@ viewOriginalBtn.addEventListener('click', () => {
     viewOriginalBtn.classList.add('active');
     viewRefactoredBtn.classList.remove('active');
     currentPreviewMode = 'original';
+    refreshPageSelect();
     updatePreview();
 });
 
@@ -148,8 +149,39 @@ viewRefactoredBtn.addEventListener('click', () => {
     viewRefactoredBtn.classList.add('active');
     viewOriginalBtn.classList.remove('active');
     currentPreviewMode = 'refactored';
+    refreshPageSelect();
     updatePreview();
 });
+
+function refreshPageSelect() {
+    const mode = currentPreviewMode;
+    const files = mode === 'original' ? currentProjectFiles : refactoredProjectFiles;
+    
+    // Preserve current selection if possible
+    const currentSelection = previewPageSelect.value;
+    
+    previewPageSelect.innerHTML = '';
+    let foundHtml = false;
+    let foundSelection = false;
+
+    files.forEach(f => {
+        if (f.name.endsWith('.html')) {
+            const opt = document.createElement('option');
+            opt.value = f.name;
+            opt.textContent = f.name;
+            previewPageSelect.appendChild(opt);
+            foundHtml = true;
+            if (f.name === currentSelection) foundSelection = true;
+        }
+    });
+
+    if (foundSelection) {
+        previewPageSelect.value = currentSelection;
+    } else if (foundHtml) {
+        // Default to first
+        previewPageSelect.selectedIndex = 0;
+    }
+}
 
 previewPageSelect.addEventListener('change', updatePreview);
 
@@ -383,9 +415,50 @@ async function updatePreview() {
         });
     });
 
+    // Inject Diagnostics Script
+    const diagnosticsScript = `
+    <script>
+    (function() {
+        // Capture Runtime Errors
+        window.onerror = function(msg, url, line, col, error) {
+            window.parent.postMessage({ 
+                type: 'preview-error', 
+                data: { message: msg, line: line, col: col, source: url } 
+            }, '*');
+        };
+        // Capture Promise Rejections
+        window.addEventListener('unhandledrejection', function(event) {
+            window.parent.postMessage({ 
+                type: 'preview-error', 
+                data: { message: 'Unhandled Promise Rejection: ' + event.reason } 
+            }, '*');
+        });
+        console.log("Diagnostics Active");
+    })();
+    <\/script>
+    `;
+    
+    // Insert before closing head or body
+    if (htmlContent.includes('</head>')) {
+        htmlContent = htmlContent.replace('</head>', diagnosticsScript + '</head>');
+    } else {
+        htmlContent += diagnosticsScript;
+    }
+
     const previewBlob = new Blob([htmlContent], { type: 'text/html' });
     previewFrame.src = URL.createObjectURL(previewBlob);
 }
+
+// Diagnostics Listener
+window.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'preview-error') {
+        const { message, line, source } = event.data.data;
+        addLog({ 
+            message: `⚠️ Runtime Error: ${message} ${line ? `(Line ${line})` : ''}`, 
+            type: 'error' 
+        });
+    }
+});
 
 function getMimeType(filename) {
     if (filename.endsWith('.css')) return 'text/css';

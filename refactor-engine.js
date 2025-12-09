@@ -194,8 +194,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         CRITICAL RULES:
         1. COVERAGE: Every single line of code must be included.
-        2. SYNTAX SAFETY: Do NOT split inside functions, classes, or objects.
+        2. SYNTAX SAFETY: Do NOT split inside functions, classes, objects, or template literals. Ensure splits occur at clean top-level boundaries.
         3. ORDER: Maintain original execution order.
+        4. DEPENDENCIES: Group related variables and functions together to avoid scope reference errors.
         `;
 
         try {
@@ -241,8 +242,10 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const def of fileDefs) {
             // Fill gap
             if (def.startLine > currentLine) {
+                const gapName = `fragment-${currentLine}.${type === 'css' ? 'css' : 'js'}`;
+                this.log(`Gap detected at line ${currentLine}. Created ${gapName}`, 'warning');
                 continuousDefs.push({
-                    name: `fragment-${currentLine}.${type === 'css' ? 'css' : 'js'}`,
+                    name: gapName,
                     startLine: currentLine,
                     endLine: def.startLine - 1
                 });
@@ -265,42 +268,44 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 2. Syntax Balance Check (JS Only)
-        // Merge chunks until braces/parens are balanced to prevent SyntaxErrors
+        // Merge chunks until braces are balanced using a robust tokenizer
         if (type === 'js') {
             let bufferDef = null;
             let bufferContent = '';
-            let balance = 0; // Net open braces
+            let currentBalance = 0; 
 
             for (const def of continuousDefs) {
                 const start = def.startLine - 1;
                 const end = def.endLine;
                 const content = allLines.slice(start, end).join('\n');
-
-                // Basic brace counting (ignores comments/strings for perf, but usually sufficient)
-                // Use explicit regex for { and }
-                const opens = (content.match(/\{/g) || []).length;
-                const closes = (content.match(/\}/g) || []).length;
-                const netChange = opens - closes;
+                
+                // Use robust scanner
+                const netChange = this.scanCodeBalance(content);
 
                 if (bufferDef) {
                     // We are buffering (merging)
                     bufferContent += '\n' + content;
-                    balance += netChange;
+                    currentBalance += netChange;
                     bufferDef.endLine = def.endLine;
 
-                    if (balance === 0) {
+                    if (currentBalance === 0) {
                         // Balanced! Emit.
+                        this.log(`Merged ${def.name} into ${bufferDef.name} to fix syntax (Balance restored).`, 'info');
                         outputFiles.push({ name: bufferDef.name, content: bufferContent });
                         bufferDef = null;
                         bufferContent = '';
-                        balance = 0;
+                        currentBalance = 0;
+                    } else {
+                         // Still unbalanced
+                         this.log(`Merged ${def.name} into ${bufferDef.name} (Balance: ${currentBalance})`, 'info');
                     }
                 } else {
                     if (netChange !== 0) {
                         // Unbalanced start, begin buffering
+                        this.log(`File ${def.name} ended with unbalanced braces (Balance: ${netChange}). Merging with next...`, 'warning');
                         bufferDef = def;
                         bufferContent = content;
-                        balance = netChange;
+                        currentBalance = netChange;
                     } else {
                         // Balanced immediately
                         outputFiles.push({ name: def.name, content });
@@ -310,7 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Flush remaining buffer
             if (bufferDef) {
-                this.log(`Merged remaining content into ${bufferDef.name} to enforce syntax balance.`, 'warning');
+                this.log(`Merged remaining content into ${bufferDef.name}. Final balance: ${currentBalance} (Ideally 0).`, 'warning');
                 outputFiles.push({ name: bufferDef.name, content: bufferContent });
             }
         } else {
@@ -324,6 +329,60 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         return outputFiles;
+    }
+
+    /**
+     * Robustly counts brace balance ignoring strings and comments
+     * @returns {number} Net change in brace balance (positive = open, negative = closed)
+     */
+    scanCodeBalance(code) {
+        let balance = 0;
+        let inString = false;
+        let stringChar = '';
+        let inComment = false;
+        let commentType = ''; // '//' or '/*'
+        let escape = false;
+
+        for (let i = 0; i < code.length; i++) {
+            const char = code[i];
+            const next = code[i+1] || '';
+
+            if (inString) {
+                if (escape) {
+                    escape = false;
+                } else if (char === '\\') {
+                    escape = true;
+                } else if (char === stringChar) {
+                    inString = false;
+                }
+            } else if (inComment) {
+                if (commentType === '//' && char === '\n') {
+                    inComment = false;
+                } else if (commentType === '/*' && char === '*' && next === '/') {
+                    inComment = false;
+                    i++; // skip /
+                }
+            } else {
+                // Not in string or comment
+                if (char === '"' || char === "'" || char === '`') {
+                    inString = true;
+                    stringChar = char;
+                } else if (char === '/' && next === '/') {
+                    inComment = true;
+                    commentType = '//';
+                    i++;
+                } else if (char === '/' && next === '*') {
+                    inComment = true;
+                    commentType = '/*';
+                    i++;
+                } else if (char === '{') {
+                    balance++;
+                } else if (char === '}') {
+                    balance--;
+                }
+            }
+        }
+        return balance;
     }
 
     isEsModule(content) {
