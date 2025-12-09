@@ -18,6 +18,8 @@ const fileList = document.getElementById('fileList');
 const mergeCssCheck = document.getElementById('mergeCss');
 const mergeJsCheck = document.getElementById('mergeJs');
 const extremeModeCheck = document.getElementById('extremeMode');
+const aiSplitCheck = document.getElementById('aiSplit');
+const removeCommentsBtn = document.getElementById('removeCommentsBtn');
 
 // Tab Switching
 const tabs = document.querySelectorAll('.tab-btn');
@@ -45,6 +47,37 @@ function addLog(data) {
     const panel = logContainer.parentElement;
     panel.scrollTop = panel.scrollHeight;
 }
+
+// Remove Comments Handler
+removeCommentsBtn.addEventListener('click', () => {
+    const raw = htmlInput.value;
+    if (!raw.trim()) return;
+    
+    addLog({ message: 'Cleaning code...', type: 'info' });
+    
+    // We can instantiate the engine just for this utility
+    const engine = new RefactorEngine(addLog);
+    const cleaned = engine.removeComments(raw);
+    
+    htmlInput.value = cleaned;
+    addLog({ message: 'Comments removed from input editor.', type: 'success' });
+});
+
+// AI Toggle Handler (UX polish)
+aiSplitCheck.addEventListener('change', (e) => {
+    if (e.target.checked) {
+        mergeCssCheck.disabled = true;
+        mergeJsCheck.disabled = true;
+        mergeCssCheck.parentElement.style.opacity = '0.5';
+        mergeJsCheck.parentElement.style.opacity = '0.5';
+        addLog({ message: 'AI Split enabled: Manual merge options disabled.', type: 'info' });
+    } else {
+        mergeCssCheck.disabled = false;
+        mergeJsCheck.disabled = false;
+        mergeCssCheck.parentElement.style.opacity = '1';
+        mergeJsCheck.parentElement.style.opacity = '1';
+    }
+});
 
 // UI Helper: File List
 function updateFileList(files) {
@@ -143,10 +176,11 @@ refactorBtn.addEventListener('click', async () => {
         const options = {
             mergeCss: mergeCssCheck.checked,
             mergeJs: mergeJsCheck.checked,
-            extremeMode: extremeModeCheck.checked
+            extremeMode: extremeModeCheck.checked,
+            aiSplit: aiSplitCheck.checked
         };
 
-        const result = engine.process(rawHtml, options);
+        const result = await engine.process(rawHtml, options);
 
         // Prepare ZIP
         addLog({ message: 'Packaging files into ZIP...', type: 'info' });

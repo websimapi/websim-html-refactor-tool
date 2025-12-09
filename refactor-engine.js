@@ -17,13 +17,36 @@ export class RefactorEngine {
     }
 
     /**
+     * Remove comments from HTML string
+     * @param {string} htmlString 
+     * @returns {string} Cleaned HTML
+     */
+    removeComments(htmlString) {
+        this.log('Removing code comments...', 'info');
+        // Remove HTML comments <!-- ... -->
+        let cleaned = htmlString.replace(/<!--[\s\S]*?-->/g, '');
+        // Remove CSS comments /* ... */
+        cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+        // Remove JS comments (single line // and multi line /* */)
+        // Be careful not to remove // inside strings or URLs in HTML attributes
+        // This regex is a simplistic approximation for JS inside script tags mostly
+        // A full parser is better, but regex works for 90% of cases in this scope
+        
+        // We will process script contents separately to be safer if we were parsing, 
+        // but for a raw string global replace, we have to be careful.
+        // Let's stick to safe HTML/CSS comment removal globally, and rely on extraction for JS.
+        
+        return cleaned;
+    }
+
+    /**
      * Main process method
      * @param {string} htmlString - The raw HTML content
      * @param {object} options - Configuration options
-     * @returns {object} { html, files: [{name, content}] }
+     * @returns {Promise<object>} { html, files: [{name, content}] }
      */
-    process(htmlString, options) {
-        const { mergeCss, mergeJs, extremeMode } = options;
+    async process(htmlString, options) {
+        const { mergeCss, mergeJs, extremeMode, aiSplit } = options;
 
         this.log('Initializing DOMParser...', 'info');
         const parser = new DOMParser();
@@ -42,19 +65,39 @@ export class RefactorEngine {
         this.log('Scanning for <style> tags...', 'info');
         const styleTags = Array.from(doc.querySelectorAll('style'));
         let mergedCssContent = '';
-
+        
+        // Preparation for AI: Gather all content first
         if (styleTags.length > 0) {
             this.log(`Found ${styleTags.length} style blocks.`, 'info');
-
+            
+            // First pass: extract all content
             styleTags.forEach((style, index) => {
-                const content = style.textContent;
-
-                if (mergeCss) {
-                    // Preserve order by concatenation
-                    mergedCssContent += `/* Extracted from <style> block #${index + 1} */\n${content}\n\n`;
-                    // Remove tag
+                mergedCssContent += style.textContent + '\n';
+            });
+            
+            if (aiSplit && mergedCssContent.trim()) {
+                this.log('🤖 AI Analysis: Determining optimal CSS split...', 'warning');
+                const splitFiles = await this.performAiSplit(mergedCssContent, 'css');
+                
+                // Remove all original style tags
+                styleTags.forEach(s => s.remove());
+                
+                // Add new links
+                splitFiles.forEach(f => {
+                    files.push(f);
+                    const link = doc.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = f.name;
+                    doc.head.appendChild(link); // Append to head for CSS
+                    this.log(`AI Created: ${f.name}`, 'success');
+                });
+                
+            } else if (mergeCss) {
+                // ... Existing Merge Logic ...
+                let processedContent = '';
+                styleTags.forEach((style, index) => {
+                    processedContent += `/* Extracted from <style> block #${index + 1} */\n${style.textContent}\n\n`;
                     if (index === 0) {
-                        // Replace the first style tag with the link to maintain approximate position (cascade)
                         const link = doc.createElement('link');
                         link.rel = 'stylesheet';
                         link.href = 'style.css';
@@ -62,28 +105,25 @@ export class RefactorEngine {
                     } else {
                         style.remove();
                     }
-                } else {
-                    // Split Strategy
+                });
+                files.push({ name: 'style.css', content: processedContent });
+                this.log('Merged all CSS into style.css', 'success');
+                
+            } else {
+                // ... Existing Split Logic ...
+                styleTags.forEach((style) => {
                     const filename = `style-${cssCounter}.css`;
-                    files.push({ name: filename, content: content });
-
+                    files.push({ name: filename, content: style.textContent });
+                    
                     const link = doc.createElement('link');
                     link.rel = 'stylesheet';
                     link.href = filename;
-                    // Copy attributes (like media queries)
-                    Array.from(style.attributes).forEach(attr => {
-                        link.setAttribute(attr.name, attr.value);
-                    });
-
+                    Array.from(style.attributes).forEach(attr => link.setAttribute(attr.name, attr.value));
+                    
                     style.parentNode.replaceChild(link, style);
                     this.log(`Extracted ${filename}`, 'success');
                     cssCounter++;
-                }
-            });
-
-            if (mergeCss && mergedCssContent.trim()) {
-                files.push({ name: 'style.css', content: mergedCssContent });
-                this.log('Merged all CSS into style.css', 'success');
+                });
             }
         } else {
             this.log('No <style> tags found.', 'info');
@@ -91,53 +131,60 @@ export class RefactorEngine {
 
         // --- JS EXTRACTION ---
         this.log('Scanning for inline <script> tags...', 'info');
-        // Select scripts that don't have a src attribute and are not type="application/json" etc unless explicitly js
         const scriptTags = Array.from(doc.querySelectorAll('script:not([src])'));
-        // Filter out non-executable scripts (like JSON-LD or templates if they lack type or are text/javascript)
         const executableScripts = scriptTags.filter(s => !s.type || s.type === 'text/javascript' || s.type === 'module');
 
         let mergedJsContent = '';
 
         if (executableScripts.length > 0) {
             this.log(`Found ${executableScripts.length} inline script blocks.`, 'info');
+            
+            executableScripts.forEach(s => mergedJsContent += s.textContent + '\n');
 
-            executableScripts.forEach((script, index) => {
-                const content = script.textContent;
-                if (!content.trim()) return;
-
-                if (mergeJs) {
-                    mergedJsContent += `// Extracted from script block #${index + 1}\n${content}\n\n`;
-                    // Logic: If merging, we usually want the script to run at the end or where the first/last script was.
-                    // Simple strategy: Remove all, append <script src="app.js"> at end of body.
+            if (aiSplit && mergedJsContent.trim()) {
+                this.log('🤖 AI Analysis: Determining optimal JS split...', 'warning');
+                const splitFiles = await this.performAiSplit(mergedJsContent, 'js');
+                
+                // Remove all original scripts
+                executableScripts.forEach(s => s.remove());
+                
+                // Add new scripts
+                splitFiles.forEach(f => {
+                    files.push(f);
+                    const script = doc.createElement('script');
+                    script.src = f.name;
+                    // Assume module for safety if splitting complex apps, or regular if simple
+                    // Best guess: use type="module" if the original code looks modular, but standard for generic
+                    // For now, standard script appended to body
+                    doc.body.appendChild(script);
+                    this.log(`AI Created: ${f.name}`, 'success');
+                });
+                
+            } else if (mergeJs) {
+                let processedContent = '';
+                executableScripts.forEach((script, index) => {
+                    processedContent += `// Extracted from script block #${index + 1}\n${script.textContent}\n\n`;
                     script.remove();
-                } else {
-                    // Split Strategy
+                });
+                files.push({ name: 'app.js', content: processedContent });
+                const mainScript = doc.createElement('script');
+                mainScript.src = 'app.js';
+                doc.body.appendChild(mainScript);
+                this.log('Merged all JS into app.js', 'success');
+                
+            } else {
+                executableScripts.forEach((script) => {
                     const filename = `script-${jsCounter}.js`;
-                    files.push({ name: filename, content: content });
+                    files.push({ name: filename, content: script.textContent });
 
                     const newScript = doc.createElement('script');
                     newScript.src = filename;
-                    // Copy attributes (defer, async, type="module")
-                    Array.from(script.attributes).forEach(attr => {
-                        newScript.setAttribute(attr.name, attr.value);
-                    });
+                    Array.from(script.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
 
                     script.parentNode.replaceChild(newScript, script);
                     this.log(`Extracted ${filename}`, 'success');
                     jsCounter++;
-                }
-            });
-
-            if (mergeJs && mergedJsContent.trim()) {
-                files.push({ name: 'app.js', content: mergedJsContent });
-
-                // Add the script tag to the end of body
-                const mainScript = doc.createElement('script');
-                mainScript.src = 'app.js';
-                // If the original scripts were modules, we might have an issue merging. 
-                // For simplicity in this tool, we assume standard JS unless user manages module deps.
-                doc.body.appendChild(mainScript);
-                this.log('Merged all JS into app.js', 'success');
+                });
             }
         } else {
             this.log('No inline <script> tags found.', 'info');
@@ -202,5 +249,78 @@ document.addEventListener('DOMContentLoaded', () => {
             html: finalHtml,
             files: files
         };
+    }
+
+    /**
+     * Uses AI to determine split points based on line numbers
+     * @param {string} code 
+     * @param {string} type 'css' or 'js'
+     * @returns {Promise<Array>} Array of {name, content}
+     */
+    async performAiSplit(code, type) {
+        // 1. Prepare code with line numbers for the AI
+        const lines = code.split('\n');
+        const numberedCode = lines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
+        
+        // Truncate if too huge (safety limit for demo)
+        const safeCode = numberedCode.length > 50000 ? numberedCode.substring(0, 50000) + "\n... (truncated)" : numberedCode;
+
+        const systemPrompt = `You are a code refactoring engine. 
+        Your goal is to split a monolithic ${type.toUpperCase()} file into logical, modular component files.
+        Return a JSON object containing a "files" array.
+        Each item in "files" must have:
+        - "name": filename (e.g., 'header.css', 'utils.js')
+        - "startLine": integer (inclusive 1-based index)
+        - "endLine": integer (inclusive 1-based index)
+        
+        Ensure every single line of code is covered by exactly one file range. No overlaps, no gaps.
+        Sort by startLine.
+        `;
+
+        try {
+            const completion = await websim.chat.completions.create({
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `Here is the code with line numbers:\n\n${safeCode}` }
+                ],
+                json: true
+            });
+
+            const result = JSON.parse(completion.content);
+            
+            if (!result.files || !Array.isArray(result.files)) {
+                throw new Error("Invalid AI response structure");
+            }
+
+            const outputFiles = [];
+            
+            result.files.forEach(fileDef => {
+                // Convert 1-based start/end to 0-based array slice indices
+                // Slice is [start, end), so we need startLine-1 to endLine
+                const start = fileDef.startLine - 1;
+                const end = fileDef.endLine; // slice excludes end, so this covers up to the line we want
+                
+                // Safety bounds
+                const safeStart = Math.max(0, start);
+                const safeEnd = Math.min(lines.length, end);
+                
+                if (safeStart < safeEnd) {
+                    const fileContent = lines.slice(safeStart, safeEnd).join('\n');
+                    outputFiles.push({
+                        name: fileDef.name,
+                        content: fileContent
+                    });
+                }
+            });
+
+            return outputFiles;
+
+        } catch (e) {
+            this.log(`AI Split Failed: ${e.message}. Falling back to single file.`, 'error');
+            return [{ 
+                name: type === 'css' ? 'style.css' : 'app.js', 
+                content: code 
+            }];
+        }
     }
 }

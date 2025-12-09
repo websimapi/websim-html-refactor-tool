@@ -200,6 +200,14 @@ textarea:focus {
     background: rgba(239, 68, 68, 0.05);
 }
 
+.ai-zone {
+    border-color: rgba(168, 85, 247, 0.5); /* Purple */
+}
+
+.ai-zone:hover {
+    background: rgba(168, 85, 247, 0.05);
+}
+
 .opt-text {
     display: flex;
     flex-direction: column;
@@ -231,6 +239,36 @@ textarea:focus {
 
 .primary-btn:active {
     transform: translateY(1px);
+}
+
+.action-buttons {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.secondary-btn {
+    flex: 1;
+    padding: 1rem;
+    background-color: var(--panel-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.secondary-btn:hover {
+    background-color: rgba(255,255,255,0.05);
+    border-color: var(--text-muted);
+}
+
+.primary-btn {
+    flex: 2;
 }
 
 /* Output Panel Styles */
