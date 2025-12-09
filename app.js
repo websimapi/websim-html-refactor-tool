@@ -153,64 +153,119 @@ viewRefactoredBtn.addEventListener('click', () => {
 
 previewPageSelect.addEventListener('change', updatePreview);
 
-// Enhanced File Handler
-function handleFile(fileOrFiles) {
+// Enhanced File Handler with ZIP Support
+async function handleFile(fileOrFiles) {
     const files = (fileOrFiles instanceof FileList) ? Array.from(fileOrFiles) : [fileOrFiles];
     
     currentProjectFiles = [];
     refactoredProjectFiles = [];
     previewPageSelect.innerHTML = '';
     
-    addLog({ message: `Processing ${files.length} file(s)...`, type: 'info' });
+    addLog({ message: `Processing input...`, type: 'info' });
 
-    let htmlFound = false;
-    let readCount = 0;
+    const processedFiles = [];
 
-    files.forEach(file => {
-        const reader = new FileReader();
+    // 1. Expand ZIPs and collect all files
+    for (const file of files) {
+        const fileType = file.type || '';
         
-        // Check if binary (image) or text
-        const isImage = file.type.startsWith('image/');
-        
-        reader.onload = (e) => {
-            // Use webkitRelativePath if available and valid, else name
-            const path = file.webkitRelativePath || file.name;
-            
-            currentProjectFiles.push({
-                name: path,
-                content: e.target.result, 
-                fileObject: file,
-                isBinary: isImage
-            });
-
-            // If it's HTML, populate select
-            if (file.name.endsWith('.html')) {
-                const opt = document.createElement('option');
-                opt.value = path;
-                opt.textContent = path;
-                previewPageSelect.appendChild(opt);
+        // Check for ZIP (by extension or mime)
+        if (file.name.endsWith('.zip') || fileType.includes('zip')) {
+            try {
+                addLog({ message: `Unzipping ${file.name}...`, type: 'info' });
+                const zip = await JSZip.loadAsync(file);
                 
-                // If index.html, select it by default
-                if (file.name.toLowerCase() === 'index.html') {
-                    previewPageSelect.value = path;
+                // Collect entries
+                const entries = [];
+                zip.forEach((relativePath, zipEntry) => {
+                    if (!zipEntry.dir && !relativePath.startsWith('__MACOSX')) {
+                        entries.push({ path: relativePath, entry: zipEntry });
+                    }
+                });
+
+                // Extract blobs
+                for (const { path, entry } of entries) {
+                    const blob = await entry.async('blob');
+                    processedFiles.push({
+                        name: path,
+                        blob: blob
+                    });
                 }
-                
-                htmlFound = true;
+            } catch (e) {
+                addLog({ message: `Failed to unzip ${file.name}: ${e.message}`, type: 'error' });
             }
-
-            readCount++;
-            if (readCount === files.length) {
-                finalizeUpload();
-            }
-        };
-
-        // For preview, we generally want Blob URLs, but for Refactoring we need Text content for HTML/CSS/JS.
-        // Images must be DataURL/Blob.
-        if (isImage) {
-            reader.readAsDataURL(file);
         } else {
-            reader.readAsText(file);
+            // Regular file
+            processedFiles.push({
+                name: file.webkitRelativePath || file.name,
+                blob: file
+            });
         }
+    }
+
+    if (processedFiles.length === 0) {
+        addLog({ message: 'No valid files found.', type: 'warning' });
+        return;
+    }
+
+    addLog({ message: `Loading ${processedFiles.length} files...`, type: 'info' });
+    
+    let htmlFound = false;
+
+    // 2. Read content
+    for (const pFile of processedFiles) {
+        const name = pFile.name;
+        const ext = name.split('.').pop().toLowerCase();
+        // Robust binary check by extension (safer for unzipped blobs)
+        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'woff', 'woff2', 'ttf', 'eot'].includes(ext);
+        
+        let content;
+        if (isImage) {
+            content = await readFileAsDataURL(pFile.blob);
+        } else {
+            content = await readFileAsText(pFile.blob);
+        }
+
+        // Populate Dropdown for HTML
+        if (name.endsWith('.html')) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            previewPageSelect.appendChild(opt);
+            
+            // Auto-select index.html or first html
+            if (name.toLowerCase().endsWith('index.html') || !previewPageSelect.value) {
+                previewPageSelect.value = name;
+            }
+            htmlFound = true;
+        }
+
+        currentProjectFiles.push({
+            name: name,
+            content: content,
+            fileObject: pFile.blob, // Keep blob for preview iframe
+            isBinary: isImage
+        });
+    }
+
+    finalizeUpload();
+}
+
+function readFileAsText(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsText(blob);
+    });
+}
+
+function readFileAsDataURL(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
     });
 }
 
